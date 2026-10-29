@@ -114,3 +114,21 @@ Evidence is under `$HERMES_SCRATCH/java-repair-evidence/` in this review session
 (`unittest.log`, `bats.log`, `jsse.json`, public-only before/after stores).
 Initial test-harness mistakes (a recursive mock and a mutable-argv marker path)
 were fixed before passing reruns; those first failures were not helper success.
+
+## Subsequent Debian/Raspberry Pi acceptance
+
+The same transaction and lifecycle suites were then run on the node's Debian
+OpenJDK 17.0.19 against disposable stores. All 25 tests passed without skips,
+including an added real Linux POSIX access-ACL and user-xattr preservation case.
+That case uses the Linux UAPI ACL encoding and needs no ACL utility package.
+Owner, group, mode, ACL bytes, and unrelated xattrs survived remediation.
+An initial test-source package omitted the FinTS script and failed one lifecycle
+test; including the reviewed script produced the passing full rerun.
+
+Separately, a supervised atomic replacement had already corrected the live
+public-only store, removing two incident entries and preserving 161. Actual
+Debian JSSE passed 68 before/after controls and 18 default-context live controls.
+That manual operation is not evidence for the old unsafe implementation. The
+repaired helper's Linux fault/preservation qualification used disposable stores,
+not user private keys. Full FinTS installation, full image/reboot acceptance,
+and hardware power-cut behavior remain untested.

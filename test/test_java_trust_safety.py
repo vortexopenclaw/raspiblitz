@@ -35,6 +35,39 @@ class SafetyTests(unittest.TestCase):
     def assert_clean(self):
         self.assertEqual(list(self.store.parent.glob('.*.trust-*')), [])
 
+    @unittest.skipUnless(sys.platform.startswith('linux') and hasattr(os, 'setxattr'),
+                         'Linux POSIX ACL/xattr integration required')
+    def test_linux_posix_acl_and_user_xattr_are_preserved(self):
+        import errno
+        import pwd
+        import struct
+        setxattr = getattr(os, 'setxattr')
+        getxattr = getattr(os, 'getxattr')
+        listxattr = getattr(os, 'listxattr')
+        self.bad_store()
+        # Linux UAPI posix_acl.h / posix_acl_xattr.h layout, no ACL tool package.
+        undefined = (1 << 32) - 1
+        entries = [(0x01, 0x06, undefined),
+                   (0x02, 0x04, pwd.getpwnam('nobody').pw_uid),
+                   (0x04, 0, undefined), (0x10, 0x04, undefined),
+                   (0x20, 0, undefined)]
+        acl = struct.pack('<I', 0x0002) + b''.join(struct.pack('<HHI', *e) for e in entries)
+        try:
+            setxattr(self.store, 'system.posix_acl_access', acl)
+            setxattr(self.store, 'user.java_trust_fixture', b'preserve-metadata')
+        except OSError as error:
+            if error.errno in (errno.ENOTSUP, errno.ENOSYS, errno.EPERM):
+                self.skipTest('Filesystem does not permit POSIX ACL fixtures')
+            raise
+        before = {name: getxattr(self.store, name) for name in listxattr(self.store)}
+        metadata = self.store.stat()
+        self.assertEqual(before['system.posix_acl_access'], acl)
+        fix.remediate(self.store, True)
+        self.assertEqual({name: getxattr(self.store, name) for name in listxattr(self.store)}, before)
+        after = self.store.stat()
+        self.assertEqual((after.st_uid, after.st_gid, after.st_mode),
+                         (metadata.st_uid, metadata.st_gid, metadata.st_mode))
+
     def test_reproduced_real_keytool_alias_replacement_race(self):
         self.bad_store()
         real = fix.keytool

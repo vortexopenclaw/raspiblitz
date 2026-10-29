@@ -100,8 +100,10 @@ certificate blocklisting alone, especially for key-rollover paths.
   served incident hosts returned verified HTTP 200 before and certificate
   validation errors after. Four positive HTTPS hosts returned verified HTTP
   200 with both stores. No fallback/default root store or verification bypass.
-* That is a macOS Temurin runtime using the node's public anchors, not TLS
-  execution on the node's Debian runtime. Node acceptance remains required.
+* That initial phase used a macOS Temurin runtime with the node's public
+  anchors, not Debian TLS execution. Subsequent native Debian transaction,
+  POSIX ACL/xattr, and JSSE acceptance is recorded in
+  `JAVA-TRUST-TRANSACTION.md`.
 * A first run using Homebrew `17.0.21.0.3` could not establish accepted-before
   baselines because it already rejects compromised intermediates. Retained
   failed-baseline results separately; did not mislabel them as removal proof.
@@ -137,7 +139,7 @@ python3 test/java_trust_regression.py --java "$REVIEWED_JRE/bin/java" \
   --after "$SCRATCH/after.jks" --chains "$CHAINS" --output "$SCRATCH/results.json"
 ```
 
-## Parent-reviewed node remediation, not executed
+## Reference node remediation procedure
 
 First install the reviewed helper in `/home/admin/config.scripts` through the
 normal reviewed code deployment. Confirm the exact effective Java path and
