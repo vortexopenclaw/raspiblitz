@@ -1,6 +1,7 @@
 #!/bin/bash
 
-# Vendor-managed trust only. Policy and limitations: test/TRUST-AUDIT.md.
+# Vendor packages plus scoped Java incident anchors. See test/TRUST-AUDIT.md
+# and test/JAVA-TRUST-AUDIT.md for policy and limitations.
 if [ "$#" -ne 1 ] || { [ "$1" != update ] && [ "$1" != check ]; }; then
   echo "Usage: blitz.trust.sh [update|check]"
   exit 1
@@ -18,6 +19,7 @@ installed() {
 if [ "$1" = update ]; then
   packages=(ca-certificates)
   if installed nodejs; then packages+=(nodejs); fi
+  if installed ca-certificates-java; then packages+=(ca-certificates-java); fi
   # Do not override holds/pins or accept a partial index refresh.
   sudo apt-get -o APT::Update::Error-Mode=any update || fail "APT index refresh failed."
   sudo apt-get install --only-upgrade -y "${packages[@]}" || fail "Trust package upgrade failed."
@@ -51,5 +53,17 @@ if installed nodejs || command -v node >/dev/null 2>&1; then
   dpkg --compare-versions "${node_version#v}" ge "$minimum" || fail "Node.js $node_version needs >= $minimum on its major line."
 fi
 
-echo "Vendor trust package baselines verified. Restart consumers after updates."
+# Debian's OS refresh does not reliably propagate removals to Java (Debian
+# #1069251). A Java fresh trigger can also delete directly imported debian:
+# entries. Apply only the two reviewed incident identities, preserving others.
+if installed ca-certificates-java; then
+  java_helper=/home/admin/config.scripts/blitz.trust.java.py
+  if [ "$1" = update ]; then
+    sudo python3 "$java_helper" update || fail "Java trust remediation failed."
+  else
+    python3 "$java_helper" check || fail "Java trust check failed."
+  fi
+fi
+
+echo "Vendor trust package baselines and scoped Java anchors verified. Restart consumers after updates."
 echo "Independent application bundles and explicit CA overrides need separate checks."

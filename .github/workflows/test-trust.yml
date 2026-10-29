@@ -5,6 +5,10 @@ on:
   pull_request:
     paths:
       - "home.admin/config.scripts/blitz.trust.sh"
+      - "home.admin/config.scripts/blitz.trust.java.py"
+      - "test/test_java_trust.py"
+      - "test/JavaTrustProbe.java"
+      - "test/java_trust_regression.py"
       - "home.admin/_provision.update.sh"
       - "home.admin/_provision.setup.sh"
       - "home.admin/config.scripts/bonus.nodejs.sh"
@@ -16,6 +20,10 @@ on:
     branches: ["dev"]
     paths:
       - "home.admin/config.scripts/blitz.trust.sh"
+      - "home.admin/config.scripts/blitz.trust.java.py"
+      - "test/test_java_trust.py"
+      - "test/JavaTrustProbe.java"
+      - "test/java_trust_regression.py"
       - "home.admin/_provision.update.sh"
       - "home.admin/_provision.setup.sh"
       - "home.admin/config.scripts/bonus.nodejs.sh"
@@ -36,6 +44,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y bats shellcheck
       - name: Test refresh control flow without changing host trust
         run: bats test/blitz.trust.bats
+      - name: Test Java public-inventory guards
+        run: python3 -m unittest discover -s test -p test_java_trust.py -v
       - name: Check refresh script
         run: |
           shellcheck home.admin/config.scripts/blitz.trust.sh home.admin/config.scripts/bonus.nodejs.sh

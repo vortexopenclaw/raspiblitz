@@ -6,7 +6,8 @@ setup() {
   mkdir -p "$MOCK_BIN"
   ln -s "$(command -v dpkg)" "$MOCK_BIN/dpkg"
   export PATH="$MOCK_BIN:$PATH"
-  export NODE_STATUS="install ok installed" CA_STATUS=installed
+  export NODE_STATUS="install ok installed" CA_STATUS=installed JAVA_STATUS=not-installed
+  export JAVA_FAIL=0
   export NODE_VERSION=v22.23.4 CA_VERSION='20250419~deb12u2'
   export FAIL_STEP="" INSTALLED_VERSION=""
   export NODE_FILE="$BATS_TEST_TMPDIR/node-version"
@@ -20,7 +21,9 @@ setup() {
 import os, pathlib, sys
 root, helper, installer, provision = sys.argv[1:]
 text = pathlib.Path(root, 'home.admin/config.scripts/blitz.trust.sh').read_text()
+text = text.replace('/home/admin/config.scripts/blitz.trust.java.py', helper + '.java.py')
 pathlib.Path(helper).write_text(text.replace('/etc/os-release', os.environ['OS_FILE']))
+pathlib.Path(helper + '.java.py').write_text('import os, sys\nwith open(os.environ["TRUST_LOG"], "a") as f: f.write("java-helper " + sys.argv[1] + "\\n")\nsys.exit(int(os.environ["JAVA_FAIL"]))\n')
 for source, target in [('home.admin/config.scripts/bonus.nodejs.sh', installer),
                        ('home.admin/_provision.setup.sh', provision)]:
     text = pathlib.Path(root, source).read_text()
@@ -40,6 +43,7 @@ MOCK
 #!/bin/bash
 case "$*" in
   *'${db:Status-Status}'*nodejs) printf '%s' "${NODE_STATUS##* }" ;;
+  *'${db:Status-Status}'*ca-certificates-java) printf '%s' "$JAVA_STATUS" ;;
   *'${db:Status-Status}'*ca-certificates) printf '%s' "$CA_STATUS" ;;
   *'${Version}'*ca-certificates) printf '%s' "$CA_VERSION" ;;
   *) exit 1 ;;
@@ -216,6 +220,25 @@ MOCK
   export INSTALLED_VERSION=v22.23.4
   run bash "$INSTALLER" on
   [ "$status" -eq 0 ]
+}
+
+@test "installed Java has scoped update and offline check with fatal failures" {
+  export JAVA_STATUS=installed
+  run bash "$SCRIPT" update
+  [ "$status" -eq 0 ]
+  grep -q 'ca-certificates nodejs ca-certificates-java' "$TRUST_LOG"
+  grep -q 'java-helper update' "$TRUST_LOG"
+  : > "$TRUST_LOG"
+  run bash "$SCRIPT" check
+  [ "$status" -eq 0 ]
+  [ "$(< "$TRUST_LOG")" = 'java-helper check' ]
+  export JAVA_FAIL=1
+  run bash "$SCRIPT" update
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'Java trust remediation failed'* ]]
+  run bash "$SCRIPT" check
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'Java trust check failed'* ]]
 }
 
 @test "fixed existing installer is offline and still enforces CA baseline" {

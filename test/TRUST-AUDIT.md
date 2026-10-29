@@ -16,7 +16,13 @@ controls with authorized TLS and HTTP 200.
 
 `blitz.trust.sh update` refreshes APT indexes, updates only ca-certificates
 and the installed nodejs package, and regenerates the Debian bundle and
-hashed directory using the vendor tool. It does not install Node on a
+hashed directory using the vendor tool. When ca-certificates-java is installed,
+it upgrades that package and performs identity-specific Java incident-anchor
+removal/checks because Debian's OS refresh does not propagate removals reliably.
+See [the focused Java audit](JAVA-TRUST-AUDIT.md) for custom-entry preservation,
+private-key limits, real JSSE evidence, and the deliberately narrower Debian
+policy compared with OpenJDK's standalone-runtime workaround.
+It does not install Node on a
 minimal image. It does not edit user CA lists, local CA files, environment
 variables, service configuration, or application settings. It uses the
 already configured package repositories and respects their pins and holds.
