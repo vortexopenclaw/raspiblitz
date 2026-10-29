@@ -244,6 +244,12 @@ class Bootstrap(unittest.TestCase):
         python = self.venv('26.0.1')
         malformed = self.base / 'broken-ca.pem'
         malformed.write_text('not a certificate\n')
+        marker = python.parent / 'pip-download-invoked'
+        wrapper = python.parent / 'precheck-python'
+        wrapper.write_text('#!/bin/bash\nif [ "$1" = -m ] && [ "$2" = pip ]; then\n'
+                           'touch ' + shlex.quote(str(marker)) + '\nfi\nexec ' +
+                           shlex.quote(str(python)) + ' "$@"\n')
+        wrapper.chmod(0o755)
         with self.https_wheel() as (cert, env, requests):
             for source in ('REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE', 'PIP_CERT', 'config', 'SSL_CERT_FILE'):
                 for bad in (self.bad_ca, malformed, self.base / 'missing-ca.pem'):
@@ -255,8 +261,10 @@ class Bootstrap(unittest.TestCase):
                             policy['PIP_CONFIG_FILE'] = str(config)
                         else:
                             policy[source] = str(bad)
-                        result = self.helper(python, env=policy)
+                        marker.unlink(missing_ok=True)
+                        result = self.helper(wrapper, env=policy)
                         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertFalse(marker.exists(), 'pip download invoked before CA refusal')
                         self.assertEqual(requests, [])
                         self.assertIn('26.0.1', self.run_cmd([str(python), '-m', 'pip', '--version']).stdout)
 
