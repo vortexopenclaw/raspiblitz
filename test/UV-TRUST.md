@@ -17,6 +17,8 @@ On an aarch64 Debian 12 RaspiBlitz node with the corrected OS CA package:
 
 The four HTTPS hosts were the publisher's documented `dv-g3b-emudhra.we-have-a-problem.com`, `dv-g3b-aaa-emudhra.we-have-a-problem.com`, `dv-g3b-noct-emudhra.we-have-a-problem.com`, and `dv-g3b-aaa-noct-emudhra.we-have-a-problem.com`, not invented key-rollover hostnames. The normal index was `https://pypi.org/simple`. Each invocation used `uv --no-config --no-cache [--native-tls] pip compile --no-build --index-url URL req.in -o OUTPUT -v`, with `certifi==2026.10.23` as the input. The tests disabled automatic Python downloads and cleared certificate-policy environment overrides. No application packages were installed or built, and no services were restarted. A content-type error after the incident response is TLS acceptance, not a successful security rejection.
 
+After replacing the installed uv with the verified binary, default-policy metadata probes rejected all 14 incident endpoints and resolved the normal PyPI requirement. The same 15 checks passed as both the administrative user and the `bitcoin` user. The two narrowly patched installed scripts passed syntax checks and their actual version guards. No service restart or full application build was performed.
+
 The candidate archive's published checksum and GitHub artifact attestation both verified:
 
 - `uv-aarch64-unknown-linux-gnu.tar.gz`: SHA-256 `229e194255c7958d86d56e8790d969a6f74736592133f0dfd0076f754c642c1d`.
