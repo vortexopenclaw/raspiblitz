@@ -279,6 +279,21 @@ package constraint or maintaining an explicitly reviewed system-only client
 configuration while rolling forward. Source rollback alone does not undo
 installed venv packages.
 
+## Final helper acceptance on Debian
+
+The final helper was executed again on the actual Debian Raspberry Pi, using a
+new disposable venv seeded with distro pip 23.0.1. It upgraded to pip 26.2.2,
+and all 18 live pip TLS controls passed. The final `app` postcondition also
+passed as the installed BlitzAPI user against its actual venv. Production
+packages and services were not changed during this acceptance run. This is
+helper acceptance, not a full installer, image-build, or reboot test.
+
+Both merge orders with the reviewed OS/Node/Java trust patch passed 25 Python
+regressions and 17 vendor Bats checks, producing the same combined tree.
+JoininBox's owner repair is published separately in
+[openoms/joininbox#203](https://github.com/openoms/joininbox/pull/203); a maintained
+signed release containing it is still required before updating `JBTAG`.
+
 ## Suggested public summaries
 
 RaspiBlitz title: **Fix Python SSL trust after the eMudhra certificate compromise**
