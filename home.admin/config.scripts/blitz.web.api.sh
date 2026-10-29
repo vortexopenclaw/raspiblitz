@@ -482,8 +482,7 @@ if [ "$1" = "update-code" ]; then
         sudo -u blitzapi git reset --hard origin/${currentBranch}
     else
         echo "# ERROR: Branch 'origin/${currentBranch}' not found in remote. Cannot update."
-        echo "# Restarting services with existing code..."
-        systemctl start blitzapi blitzapi-celery-worker blitzapi-celery-beat
+        echo "# Services remain stopped; no unverified fallback restart."
         exit 1
     fi
 

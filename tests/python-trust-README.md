@@ -22,10 +22,20 @@ An incompatible pip pin, stale index, unsafe bootstrap bundle, or affected
 post-install bundle stops the operation. For a deliberately separate custom
 CA bundle, explicitly supply that reviewed bundle as the third argument.
 
-`--cert` alone does not remove pip's already-loaded vendored roots. The
-bootstrap combines `--use-deprecated=legacy-certs` with `--cert` to select
-only the supplied bundle. Normal pip truststore operation resumes after the
-upgrade. Both switches were exercised with pip 26.0.1 and 26.2.2.
+`--cert` alone does not remove modern pip's already-loaded vendored roots.
+The helper inspects pip's accepted deprecated-option choices: modern pip uses
+`--use-deprecated=legacy-certs`, while fresh pip 23.0.1 uses its existing
+certifi-only mode without an unsupported switch. Old pip with opt-in truststore
+is refused. Python below 3.10 is rejected explicitly because the fixed pip
+requires Python >=3.10. Normal pip truststore operation resumes after upgrade.
+
+Image creation and data upgrades run `system-pip /usr/bin/python3` before
+subsequent Python downloads. This Debian-only mode installs with an exact
+`--target=/usr/local/lib/pythonX.Y/dist-packages`, checks the imported pip path
+and bundle, and installs generated entrypoints in `/usr/local/bin`. It does not
+uninstall distribution pip or use `--prefix=/usr/local`, which Debian's
+`posix_local` scheme can expand to `/usr/local/local`. No PEP 668 override is
+added. Actual Debian system-mode execution remains an operator acceptance step.
 
 BlitzAPI install/update checks its standalone certifi before starting services,
 and repairs pip even if the application commit has not changed. Failures leave
@@ -33,8 +43,19 @@ services stopped rather than restarting with an affected bundle. The fixed
 BlitzAPI dependency lock must be available before using this fail-closed path.
 JoinMarket's installer repairs pip on both new and already-installed paths;
 its OS-root Twisted runtime does not need an application certifi dependency.
-Updates performed directly inside external JoininBox are outside this hook;
-rerun the pip helper after such updates.
+Updates performed directly inside external JoininBox are outside this hook.
+At JoininBox HEAD `3115bd91af8b39a40c75009163ef2e1424020e95`,
+`scripts/install.joinmarket.sh:248-253` calls JoinMarket's `install.sh` for
+update, testPR, and commit installs, then returns without the RaspiBlitz check.
+JoinMarket's own installer at `c2dd2534afa59ddcb7f7d9a67e4b57cefcf9e4a4`
+(`install.sh:182-199`) upgrades pip and setuptools inside `venv_setup`
+before dependency downloads. A post-install JoininBox-only hook is therefore
+not enough to secure those downloads. This requires a separate upstream
+JoinMarket bootstrap repair plus a postcondition on every JoininBox owner path;
+this RaspiBlitz change does not claim persistent protection of direct updates.
+Until those upstream changes land, an operator must stop the relevant clients,
+review the external installer/bootstrap path, and recheck the resulting venv.
+Do not assume a previous successful RaspiBlitz hook survives venv recreation.
 
 ## Verified release artifacts
 
@@ -79,9 +100,35 @@ across the real bootstrap. This checks bundle preservation, not a custom-CA
 server handshake. Shell syntax checks passed. BlitzAPI's frozen lock installed
 successfully; its three standalone client-root tests and Ruff checks passed.
 
-No production packages, services, or source files were changed. Local tests
-are not evidence that production services have restarted with these packages.
-The existing OS/Node and Bitcoin Core/LND changes are separate.
+These isolated development tests did not change production. A subsequent
+Debian 12 / RaspiBlitz 1.12.1 node test installed checksum-verified pip 26.2.2
+in both affected venvs and certifi 2026.10.23 in BlitzAPI, using local wheels
+with --no-index --no-deps. Dependency checks passed before and after.
+BlitzAPI's real requests, httpx, and default pip sessions passed 54 live
+controls; JoinMarket's pip passed 18. Each client rejected 14 incident hosts
+and accepted four normal HTTPS controls. BlitzAPI and both Celery services
+were restarted, all main PIDs changed, and the API documentation returned
+HTTP 200. Existing API configuration was preserved byte-for-byte. The
+installer source hooks themselves were not used for that maintenance.
+The OS/Node and Bitcoin Core/LND changes are separate.
+
+## Automated bootstrap regressions
+
+```sh
+python3.11 -m unittest discover -s tests -p 'test_python_trust_bootstrap.py' -v
+```
+
+This suite downloads real pip 23.0.1, 26.0.1, and 26.2.2 wheels over HTTPS,
+then runs isolated upgrades, including two actual HTTPS helper bootstraps.
+It covers incompatible constraints, a stale local index, affected bootstrap
+roots, opt-in old truststore, an unchanged affected postcondition, unsupported
+Python, isolated target installation/entrypoints, and update-code restart
+branches with external commands stubbed. It never starts a real service.
+Debian scheme selection is exercised with platform/path fixtures, not a claim
+of Linux installation acceptance. Run with Python 3.10/3.11 because pip 23.0.1
+predates Python 3.12. The system-mode helper itself still needs testing on the
+node, including preservation of `/usr/lib/python3/dist-packages/pip`, selected
+`/usr/local` imports and entrypoints, and unchanged baseline dependency warnings.
 
 ## Reproduce
 
@@ -145,9 +192,10 @@ Python environments can continue trusting certificates affected by the eMudhra
 compromise even after RaspiBlitz's system certificates are updated. This updates
 pip's separate certificate bundle, checks BlitzAPI's application bundle before
 restarting its services, and covers JoinMarket's installer without changing its
-runtime dependencies. Local tests rejected the published compromised chains
-and kept valid HTTPS working; deployment and service-restart verification are
-still required on the node.
+runtime dependencies. Isolated pip 23/26 bootstrap regressions and public TLS
+controls passed. Manual node maintenance also passed client TLS and service
+restart checks; the revised installer hooks still require node acceptance.
+Direct JoininBox updates need a separate upstream bootstrap fix.
 
 BlitzAPI title: **Stop trusting compromised eMudhra certificates in Python clients**
 

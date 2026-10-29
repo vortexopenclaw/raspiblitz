@@ -483,7 +483,20 @@ update-alternatives --install /usr/bin/pip pip /usr/bin/pip3 1
 # pytesseract mechanize PySocks urwid Pillow requests
 # 3. Nyx
 # setuptools
-sudo -H python3 -m pip install --upgrade pip
+# Use the matching checkout's helper. CI also supports a standalone downloaded
+# build script, before the full repository is cloned later in this file.
+trust_helper="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/home.admin/config.scripts/blitz.python-trust.sh"
+if [ -f "$trust_helper" ]; then
+  sudo -H bash "$trust_helper" system-pip /usr/bin/python3 || exit 1
+else
+  trust_helper=$(mktemp) || exit 1
+  if ! wget --https-only -O "$trust_helper" "https://raw.githubusercontent.com/${github_user}/raspiblitz/${branch}/home.admin/config.scripts/blitz.python-trust.sh" ||
+     ! sudo -H bash "$trust_helper" system-pip /usr/bin/python3; then
+    rm -f "$trust_helper"
+    exit 1
+  fi
+  rm -f "$trust_helper"
+fi
 sudo -H python3 -m pip install grpcio==1.59.3 googleapis-common-protos==1.61.0 toml==0.10.2 j2cli==0.3.10 requests[socks]==2.21.0 protobuf==4.25.1 pathlib2==2.3.7.post1
 sudo -H python3 -m pip install pytesseract mechanize PySocks urwid Pillow requests setuptools
 
