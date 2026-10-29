@@ -2,6 +2,15 @@
 
 # main repo: https://github.com/fusion44/blitz_api
 
+# Preserve download policy by name only, not the caller's execution environment.
+pip_sudo=(sudo -u blitzapi)
+while IFS= read -r name; do
+  case "$name" in
+    PIP_*|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE|SSL_CERT_FILE|SSL_CERT_DIR)
+      pip_sudo+=(--preserve-env="$name") ;;
+  esac
+done < <(compgen -e)
+
 # restart the systemd `blitzapi` when credentials of lnd or bitcoind are changed and it will
 # excute the `update-config` automatically before restarting
 
@@ -323,22 +332,22 @@ if [ "$1" = "1" ] || [ "$1" = "on" ]; then
      exit 1
   fi
   # see https://github.com/raspiblitz/raspiblitz/issues/4169 - requires a Cython upgrade.
-  sudo -u blitzapi /home/admin/config.scripts/blitz.python-trust.sh pip ./venv/bin/python || exit 1
-  if ! sudo -u blitzapi ./venv/bin/pip install --upgrade Cython; then
+  "${pip_sudo[@]}" /home/admin/config.scripts/blitz.python-trust.sh pip ./venv/bin/python || exit 1
+  if ! "${pip_sudo[@]}" ./venv/bin/pip install --upgrade Cython; then
     echo "error='pip install upgrade Cython'"
   fi
   echo "# Installing dependencies from requirements.txt ..."
 
   echo -e "[global]\nindex-url = https://pypi.org/simple" | sudo tee /etc/pip.conf > /dev/nul
   # install with https://www.piwheels.org/simple turned off to avoid issues with some packages
-  sudo -u blitzapi env PIP_CONFIG_FILE=/dev/null PIP_INDEX_URL=https://pypi.org/simple PIP_EXTRA_INDEX_URL= ./venv/bin/pip install --no-cache-dir rich-toolkit==0.14.6
+  "${pip_sudo[@]}" env PIP_CONFIG_FILE=/dev/null PIP_INDEX_URL=https://pypi.org/simple PIP_EXTRA_INDEX_URL= ./venv/bin/pip install --no-cache-dir rich-toolkit==0.14.6
   echo -e "[global]\nindex-url = https://pypi.org/simple\nextra-index-url = https://www.piwheels.org/simple" | sudo tee /etc/pip.conf > /dev/null
-  if ! sudo -u blitzapi ./venv/bin/pip install --no-cache-dir -r requirements.txt --no-deps; then
+  if ! "${pip_sudo[@]}" ./venv/bin/pip install --no-cache-dir -r requirements.txt --no-deps; then
     echo "error='pip install failed'"
     exit 1
   fi
 
-  sudo -u blitzapi /home/admin/config.scripts/blitz.python-trust.sh app ./venv/bin/python || exit 1
+  "${pip_sudo[@]}" /home/admin/config.scripts/blitz.python-trust.sh app ./venv/bin/python || exit 1
 
   # prepare systemd service
   echo "# Creating blitzapi systemd service..."
@@ -487,12 +496,12 @@ if [ "$1" = "update-code" ]; then
     fi
 
     # Also repair pip when the application commit has not changed.
-    sudo -u blitzapi /home/admin/config.scripts/blitz.python-trust.sh pip ./venv/bin/python || exit 1
+    "${pip_sudo[@]}" /home/admin/config.scripts/blitz.python-trust.sh pip ./venv/bin/python || exit 1
     newCommit=$(sudo -u blitzapi git rev-parse HEAD)
     if [ "${oldCommit}" != "${newCommit}" ]; then
       echo "# Code changed, updating dependencies..."
 
-      if ! sudo -u blitzapi ./venv/bin/pip install -r requirements.txt --no-deps; then
+      if ! "${pip_sudo[@]}" ./venv/bin/pip install -r requirements.txt --no-deps; then
          echo "# ERROR: pip install failed during update. Services remain stopped."
          exit 1
       fi
@@ -500,7 +509,7 @@ if [ "$1" = "update-code" ]; then
       echo "# no code changes"
     fi
 
-    sudo -u blitzapi /home/admin/config.scripts/blitz.python-trust.sh app ./venv/bin/python || exit 1
+    "${pip_sudo[@]}" /home/admin/config.scripts/blitz.python-trust.sh app ./venv/bin/python || exit 1
     echo "# Restarting services..."
     systemctl start blitzapi blitzapi-celery-worker blitzapi-celery-beat
 

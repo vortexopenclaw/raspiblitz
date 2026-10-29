@@ -7,6 +7,15 @@
 
 # https://github.com/openoms/joininbox/tags
 JBTAG="v0.9.0" # installs JoinMarket v0.9.12 https://github.com/JoinMarket-Org/joinmarket-clientserver/releases/tag/v0.9.12
+
+# Preserve download policy at both the owner installer and post-install hook.
+pip_sudo=(sudo -u joinmarket)
+while IFS= read -r name; do
+  case "$name" in
+    PIP_*|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE|SSL_CERT_FILE|SSL_CERT_DIR)
+      pip_sudo+=(--preserve-env="$name") ;;
+  esac
+done < <(compgen -e)
 # command info
 if [ $# -eq 0 ] || [ "$1" = "-h" ] || [ "$1" = "-help" ]; then
   echo "JoinMarket install script to install and switch JoinMarket on or off"
@@ -127,7 +136,7 @@ if [ "$1" = "install" ]; then
       # no qtgui on arm
       qtgui=false
     fi
-    if sudo -u joinmarket /home/joinmarket/install.joinmarket.sh -i install -q $qtgui; then
+    if "${pip_sudo[@]}" /home/joinmarket/install.joinmarket.sh -i install -q $qtgui; then
       echo "# Installed JoinMarket"
       echo "# Run: 'sudo /home/admin/config.scripts/bonus.joinmarket.sh on' to configure and switch on"
     else
@@ -136,7 +145,7 @@ if [ "$1" = "install" ]; then
     fi
   fi
   # JoinMarket's Twisted runtime uses OS roots, but its pip has a separate bundle.
-  sudo -u joinmarket /home/admin/config.scripts/blitz.python-trust.sh pip \
+  "${pip_sudo[@]}" /home/admin/config.scripts/blitz.python-trust.sh pip \
     /home/joinmarket/joinmarket-clientserver/jmvenv/bin/python || exit 1
   exit 0
 fi

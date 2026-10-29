@@ -484,6 +484,14 @@ update-alternatives --install /usr/bin/pip pip /usr/bin/pip3 1
 # 3. Nyx
 # setuptools
 # Refresh through signed APT before any pip download or standalone helper fetch.
+# Keep explicit download policy across sudo, without preserving execution vars.
+pip_sudo=(sudo -H)
+while IFS= read -r name; do
+  case "$name" in
+    PIP_*|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE|SSL_CERT_FILE|SSL_CERT_DIR)
+      pip_sudo+=(--preserve-env="$name") ;;
+  esac
+done < <(compgen -e)
 # The full vendor helper is not installed yet in standalone CI image builds.
 sudo apt-get -o APT::Update::Error-Mode=any update || exit 1
 sudo apt-get install --only-upgrade -y ca-certificates || exit 1
@@ -507,18 +515,18 @@ PY
 # build script, before the full repository is cloned later in this file.
 trust_helper="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/home.admin/config.scripts/blitz.python-trust.sh"
 if [ -f "$trust_helper" ]; then
-  sudo -H bash "$trust_helper" system-pip /usr/bin/python3 || exit 1
+  "${pip_sudo[@]}" bash "$trust_helper" system-pip /usr/bin/python3 || exit 1
 else
   trust_helper=$(mktemp) || exit 1
   if ! wget --no-config --https-only --ca-certificate=/etc/ssl/certs/ca-certificates.crt -O "$trust_helper" "https://raw.githubusercontent.com/${github_user}/raspiblitz/${branch}/home.admin/config.scripts/blitz.python-trust.sh" ||
-     ! sudo -H bash "$trust_helper" system-pip /usr/bin/python3; then
+     ! "${pip_sudo[@]}" bash "$trust_helper" system-pip /usr/bin/python3; then
     rm -f "$trust_helper"
     exit 1
   fi
   rm -f "$trust_helper"
 fi
-sudo -H python3 -m pip install grpcio==1.59.3 googleapis-common-protos==1.61.0 toml==0.10.2 j2cli==0.3.10 requests[socks]==2.21.0 protobuf==4.25.1 pathlib2==2.3.7.post1
-sudo -H python3 -m pip install pytesseract mechanize PySocks urwid Pillow requests setuptools
+"${pip_sudo[@]}" python3 -m pip install grpcio==1.59.3 googleapis-common-protos==1.61.0 toml==0.10.2 j2cli==0.3.10 requests[socks]==2.21.0 protobuf==4.25.1 pathlib2==2.3.7.post1
+"${pip_sudo[@]}" python3 -m pip install pytesseract mechanize PySocks urwid Pillow requests setuptools
 
 echo -e "\n*** PREPARE ${baseimage} ***"
 
@@ -774,7 +782,7 @@ git config --global --add safe.directory /home/admin/raspiblitz
 blitzpy_wheel=$(ls -tR /home/admin/raspiblitz/home.admin/BlitzPy/dist | grep -E "any.whl" | tail -n 1)
 blitzpy_version=$(echo "${blitzpy_wheel}" | grep -oE "([0-9]\.[0-9]\.[0-9])")
 echo -e "\n*** INSTALLING BlitzPy Version: ${blitzpy_version} ***"
-sudo -H /usr/bin/python -m pip install "/home/admin/raspiblitz/home.admin/BlitzPy/dist/${blitzpy_wheel}" >/dev/null 2>&1
+"${pip_sudo[@]}" /usr/bin/python -m pip install "/home/admin/raspiblitz/home.admin/BlitzPy/dist/${blitzpy_wheel}" >/dev/null 2>&1
 
 # make sure lndlibs are patched for compatibility for both Python2 and Python3
 file="/home/admin/config.scripts/lndlibs/lightning_pb2_grpc.py"

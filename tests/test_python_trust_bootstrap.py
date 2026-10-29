@@ -9,6 +9,7 @@ requires operator acceptance on Debian; the target test uses a temporary path.
 import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -17,6 +18,31 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / 'home.admin/config.scripts/blitz.python-trust.sh'
+
+
+def policy_prefix(source):
+    return source[source.index('pip_sudo=('):source.index('done < <(compgen -e)') + len('done < <(compgen -e)')]
+
+
+def reset_sudo(path, policy, probe=False):
+    """Model sudo env_reset, then execute real commands, with no privileges."""
+    shim = path / 'sudo-reset.py'
+    shim.write_text('import os, subprocess, sys\n' +
+                    'args = sys.argv[1:]\nnames = []\n' +
+                    "while args and args[0].startswith('-'):\n" +
+                    '    option = args.pop(0)\n' +
+                    "    if option == '-u': args.pop(0)\n" +
+                    "    elif option.startswith('--preserve-env='): names.extend(option.split('=', 1)[1].split(','))\n" +
+                    "    elif option != '-H': raise SystemExit('Unexpected sudo option')\n" +
+                    'expected = ' + repr(policy) + '\n' +
+                    "assert set(names) == set(expected), 'Download policy whitelist differs'\n" +
+                    "env = {'PATH': '/usr/bin:/bin', 'HOME': " + repr(str(path)) + '}\n' +
+                    'for name in names:\n' +
+                    "    assert os.environ[name] == expected[name], 'Download policy value differs'\n" +
+                    '    env[name] = os.environ[name]\n' +
+                    "assert not any(name in env for name in ('PYTHONPATH', 'PYTHONHOME', 'BASH_ENV', 'UNRELATED_SECRET'))\n" +
+                    'sys.exit(subprocess.call(' + ("[\'/usr/bin/true\']" if probe else 'args') + ', env=env))\n')
+    return f'{shlex.quote(sys.executable)} -E {shlex.quote(str(shim))}'
 
 
 class Bootstrap(unittest.TestCase):
@@ -118,6 +144,51 @@ class Bootstrap(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('26.0.1', self.run_cmd([str(python), '-m', 'pip', '--version']).stdout)
 
+    def test_outer_update_constraints_stop_restart(self):
+        python = self.venv('26.0.1')
+        path = python.parent.parent
+        source = (ROOT / 'home.admin/config.scripts/blitz.web.api.sh').read_text()
+        block = source[source.index('if [ "$1" = "update-code" ]; then'):]
+        block = block[:block.index('\n###################')]
+        block = block.replace('/home/blitzapi/blitz_api', str(path))
+        block = block.replace('ls /etc/systemd/system/blitzapi.service', 'printf blitzapi.service')
+        block = block.replace('/home/admin/config.scripts/blitz.python-trust.sh',
+                              'bash ' + shlex.quote(str(HELPER)))
+        block = block.replace('./venv/bin/python', './venv/bin/python ' + shlex.quote(str(self.ca)))
+        block = block.replace('./venv/bin/', shlex.quote(str(python.parent)) + '/')
+        constraint = path / 'constraint.txt'
+        policy = {k: v for k, v in self.env.items() if k.startswith('PIP_')}
+        policy.update(PIP_CONSTRAINT=str(constraint), REQUESTS_CA_BUNDLE=str(self.ca),
+                      CURL_CA_BUNDLE=str(self.ca), SSL_CERT_FILE=str(self.ca), SSL_CERT_DIR=str(path))
+        runner = reset_sudo(path, policy)
+        header = '''
+systemctl() { echo "service $*"; }
+sudo() {
+  if [ "$1" = chown ]; then return 0; fi
+  if [ "$3" = git ]; then
+    if [ "$4" = rev-parse ]; then
+      if [ -f marker ]; then echo new; else touch marker; echo old; fi
+    fi
+    return 0
+  fi
+  ''' + runner + ''' "$@"
+}
+'''
+        # Real helper conflict, then successful helper and real requirements conflict.
+        for helper_failure in (True, False):
+            (path / 'marker').unlink(missing_ok=True)
+            constraint.write_text('pip==26.0.1\n' if helper_failure else 'pip==26.2.2\n')
+            (path / 'requirements.txt').write_text('pip==26.0.1\n')
+            result = subprocess.run(['bash', '-c', header + policy_prefix(source) + '\n' + block,
+                                     'test', 'update-code', 'main'],
+                                    env=dict(os.environ, **policy, UNRELATED_SECRET='do-not-forward'),
+                                    text=True, capture_output=True)
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('ResolutionImpossible', result.stdout + result.stderr)
+            self.assertIn('service stop ', result.stdout)
+            self.assertNotIn('service start ', result.stdout)
+            self.assertEqual('Code changed, updating dependencies' in result.stdout, not helper_failure)
+
     def test_stale_index_fails_closed(self):
         python = self.venv('23.0.1')
         stale = self.base / 'stale'
@@ -167,6 +238,33 @@ class Bootstrap(unittest.TestCase):
 
 
 class RestartPaths(unittest.TestCase):
+    def test_download_policy_at_every_outer_boundary(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp)
+            policy = {name: 'policy with spaces\nand punctuation=;'
+                      for name in ('PIP_CONSTRAINT', 'PIP_BUILD_CONSTRAINT', 'PIP_CERT',
+                                   'PIP_FUTURE_SETTING', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE',
+                                   'SSL_CERT_FILE', 'SSL_CERT_DIR')}
+            runner = reset_sudo(path, policy, probe=True)
+            for file, expected in (('build_sdcard.sh', 5),
+                                   ('home.admin/config.scripts/blitz.web.api.sh', 8),
+                                   ('home.admin/config.scripts/bonus.joinmarket.sh', 2)):
+                source = (ROOT / file).read_text()
+                # Run every production prefix invocation; command side effects
+                # alone are replaced. Sudo's reset strips all non-policy vars.
+                lines = [line for line in source.splitlines() if '"${pip_sudo[@]}"' in line]
+                self.assertEqual(len(lines), expected)
+                self.assertNotRegex(source, r'sudo -(?:u (?:blitzapi|joinmarket)|H) (?:[^\n]*blitz.python-trust|[^\n]* -m pip|\./venv/bin/pip|/home/joinmarket/install.joinmarket)')
+                for line in lines:
+                    command = line[line.index('"${pip_sudo[@]}"'):].split('; then', 1)[0].split(' ||', 1)[0].split(' >', 1)[0].rstrip('\\; ')
+                    header = 'sudo() { ' + runner + ' "$@"; }\n'
+                    result = subprocess.run(['bash', '-c', header + policy_prefix(source) + '\n' + command],
+                                            env=dict(os.environ, **policy, PYTHONPATH='not-forwarded',
+                                                     PYTHONHOME='not-forwarded', UNRELATED_SECRET='not-forwarded'),
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, file + ': ' + result.stdout + result.stderr)
+                    self.assertNotIn('policy with spaces', result.stdout + result.stderr)
+
     def test_update_paths(self):
         # Execute the production update block, replacing external state only.
         source = (ROOT / 'home.admin/config.scripts/blitz.web.api.sh').read_text()
@@ -181,6 +279,7 @@ currentBranch=main
 systemctl() { printf 'service %s\\n' "$*"; }
 sudo() {
   shift 2
+  while [[ "$1" = --preserve-env=* ]]; do shift; done
   if [ "$1" = git ]; then
     case "$2" in
       show-ref) return "$BRANCH_STATUS" ;;
@@ -207,7 +306,7 @@ sudo() {
                 env = dict(os.environ, BRANCH_STATUS=str(branch), FAIL_CHECK=failure,
                            COMMIT='unchanged', INSTALL_STATUS=str(install_status),
                            CHANGE=str(change), MARKER=str(marker))
-                result = subprocess.run(['bash', '-c', header + block, 'test', 'update-code', 'main'],
+                result = subprocess.run(['bash', '-c', header + policy_prefix(source) + '\n' + block, 'test', 'update-code', 'main'],
                                         env=env, capture_output=True, text=True)
                 self.assertEqual('service start ' in result.stdout, starts, result.stdout + result.stderr)
                 if starts:
@@ -216,7 +315,7 @@ sudo() {
 
     def test_image_checkout_and_standalone_fail_closed(self):
         source = (ROOT / 'build_sdcard.sh').read_text()
-        block = source[source.index('# Refresh through signed APT'):source.index('sudo -H python3 -m pip install grpcio')]
+        block = source[source.index('# Refresh through signed APT'):source.index('"${pip_sudo[@]}" python3 -m pip install grpcio')]
         block = block.replace("/usr/bin/python3 - <<", "python3 - <<")
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -225,6 +324,12 @@ sudo() {
             script = root / 'build.sh'
             header = '''
 sudo() {
+  while [[ "$1" = --preserve-env=* ]]; do shift; done
+  if [ "$1" = -H ]; then
+    shift
+    while [[ "$1" = --preserve-env=* ]]; do shift; done
+    set -- -H "$@"
+  fi
   case "$*" in
     'apt-get -o APT::Update::Error-Mode=any update') echo apt-index; return "$INDEX_STATUS" ;;
     'apt-get install --only-upgrade -y ca-certificates') echo apt-ca; return "$APT_STATUS" ;;
@@ -307,7 +412,7 @@ python_trust() { echo python; return "$HELPER_STATUS"; }
                   'sudo update-ca-certificates --fresh || exit 1',
                   "/usr/bin/python3 - <<'PY' || exit 1", 'trust_helper=',
                   'wget --no-config --https-only --ca-certificate=',
-                  'sudo -H python3 -m pip install grpcio')
+                  '"${pip_sudo[@]}" python3 -m pip install grpcio')
         positions = [image.index(event) for event in events]
         self.assertEqual(positions, sorted(positions))
         # No pip package download is allowed before the bootstrap boundary.

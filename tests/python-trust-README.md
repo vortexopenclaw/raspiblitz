@@ -18,6 +18,18 @@ RaspiBlitz updates pip independently and checks the resulting vendored
 bundle. `blitz.python-trust.sh pip PYTHON [BOOTSTRAP_CA_FILE]` uses the reviewed
 system CA bundle for bootstrap, including its local anchors, and requests
 `pip>=26.2.2`. It does not bypass package constraints or edit any trust bundle.
+The outer RaspiBlitz sudo boundary matters: preserving policy only inside
+JoininBox is too late if its owner invocation has already discarded it.
+BlitzAPI helper calls and subsequent pip downloads/requirements resolution,
+JoininBox's owner installer and RaspiBlitz posthook, and image helper/pip calls
+preserve only the names of exported `PIP_*`, `REQUESTS_CA_BUNDLE`,
+`CURL_CA_BUNDLE`, `SSL_CERT_FILE`, and `SSL_CERT_DIR` variables through sudo.
+Values are not copied into command arguments or logged. Caller `PATH`, Python
+execution variables, and the general environment are not whitelisted. Policy
+must already reach the RaspiBlitz script: an operator invoking it via an outer
+sudo must explicitly preserve these same policy names there as well. These
+hooks cannot recover variables discarded before script entry.
+
 An incompatible pip pin, stale index, unsafe bootstrap bundle, or affected
 post-install bundle stops the operation. For a deliberately separate custom
 CA bundle, explicitly supply that reviewed bundle as the third argument.
@@ -71,6 +83,14 @@ this RaspiBlitz change does not claim persistent protection of direct updates.
 Until those upstream changes land, an operator must stop the relevant clients,
 review the external installer/bootstrap path, and recheck the resulting venv.
 Do not assume a previous successful RaspiBlitz hook survives venv recreation.
+The pending JoininBox owner repair covers the old JoinMarket first pip download
+and requires Python >=3.10. Deployment still needs a maintainer-signed new
+[JoininBox release](https://github.com/openoms/joininbox/releases) containing
+that repair, followed by a reviewed `JBTAG` update and the existing signature
+verification. `JBTAG=v0.9.0` is deliberately unchanged here: a fork or unsigned
+commit is not a substitute for that owner release. The outer policy forwarding
+in this patch is necessary, but does not make the existing pin contain the
+pending bootstrap repair.
 
 ## Verified release artifacts
 
@@ -138,7 +158,12 @@ then runs isolated upgrades, including two actual HTTPS helper bootstraps.
 It covers incompatible constraints, a stale local index, affected bootstrap
 roots, opt-in old truststore, an unchanged affected postcondition, unsupported
 Python, isolated target installation/entrypoints, and update-code restart
-branches with external commands stubbed. It never starts a real service.
+branches with external commands stubbed. All original 18 tests remain; two
+additional tests exercise all 15 outer policy invocations with an env-reset sudo
+model, including values containing whitespace/newlines, all CA settings, and
+exclusion of unrelated execution variables. The production update block also
+runs real pip with incompatible helper and later requirements constraints;
+both failures leave services stopped. It never starts a real service.
 Debian scheme selection in the automated suite uses platform/path fixtures.
 Separately, all four helper modes were executed successfully on the Debian 12
 node: system pip, BlitzAPI pip, BlitzAPI application certifi, and JoinMarket pip.
