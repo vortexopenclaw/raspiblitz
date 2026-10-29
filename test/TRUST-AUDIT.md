@@ -21,16 +21,29 @@ minimal image. It does not edit user CA lists, local CA files, environment
 variables, service configuration, or application settings. It uses the
 already configured package repositories and respects their pins and holds.
 It is called during image build after scripts are copied, normal release
-preparation, and data-update provisioning before services are started.
+preparation, and fresh-setup/data-update provisioning before services start.
+The Node installer checks both existing-major and newly installed paths, so
+later fatpack installation cannot bypass the earlier image gate.
 Release preparation with `-quick` intentionally still skips OS updates.
 Code-only sync is not a trust refresh. Run the helper explicitly for that path.
 
-This is a package-refresh fix, not a universal compromise detector.
-A stale mirror, missing security repository, package pin, or independent
-runtime can still leave vulnerable trust. Successful refresh alone must
-not be reported as incident remediation. Check package versions and
-negative TLS controls before accepting a deployment. NodeSource must
-actually offer the fixed package on the existing configured major line.
+`blitz.trust.sh check` is an offline, read-only postcondition reused after
+updates and by the Node installer, without recursive installer calls. It
+requires installed ca-certificates at the reviewed Debian 12/13 minimum
+above and, when Node is installed or on PATH, a runnable stable Node version
+at least 22.23.4, 24.22.1, or 26.12.1 on its corresponding supported major.
+These versions are listed by the official October 21 Node security advisory.
+Unknown OS/Node lines fail closed pending policy review. The CA check assumes
+official Debian package contents; it is not an effective-store scan or a
+universal compromise detector. It does not certify modified bundles.
+
+Installed Node detection uses dpkg db:Status-Status, independent of hold
+selection. A stale mirror, missing security repository, or pin cannot turn
+a successful stale no-op into success. Holds/pins are not overridden; an
+APT refusal or failing version check stops the caller with a diagnostic.
+NodeSource must actually offer the fixed package on the configured major.
+No negative TLS probes or other network checks run in the offline command
+or normal boot. Perform independent negative controls at deployment.
 Package maintainer scripts may have their own effects. Consumers that
 cache roots or an old runtime need restart or the normal upgrade reboot.
 
@@ -39,11 +52,11 @@ cache roots or an old runtime need restart or the normal upgrade reboot.
 | Consumer | Source finding | Coverage and limitation |
 | --- | --- | --- |
 | Debian image | build_sdcard.sh adds bookworm-security and performs an OS upgrade | New explicit refresh fails on partial APT update errors and package or refresh failure. Earlier build downloads still depend on the base image's existing trust. |
-| Provision/update | _provision.update.sh previously had no generic CA refresh | Hook runs before updated blockchain and Lightning services start. It is not a recurring background updater. |
+| Provision/update | _provision.update.sh previously had no generic CA refresh | Fresh setup and update both gate before blockchain and Lightning services start. It is not a recurring background updater. |
 | Release | blitz.release.sh performs security upgrades unless -quick | Normal release now refreshes trust explicitly and fails if it cannot. Quick releases require independent verification. |
 | curl and wget | No repository-wide alternate CA configuration found | Normal Debian OpenSSL consumers use the updated OS store. Explicit bundles, proxy trust, cached state, and bypass flags are outside this guarantee. |
 | Python requests | Two subscription scripts create ordinary requests sessions. Image build installs pip requests and many apps create venvs | Debian certifi points to the OS bundle on the inspected node, according to supplied read-only evidence. Pip certifi and venv bundles can be independent and are not rewritten. Update each owning environment with a fixed certifi version, currently 2026.10.19, after dependency review. |
-| Node | bonus.nodejs.sh selects NodeSource major 22 and returns early if that major is installed | Refresh helper upgrades the installed package instead of treating an existing major as current. Does not set NODE_EXTRA_CA_CERTS, which adds trust rather than replacing bundled roots. Does not override explicit app ca or service options. |
+| Node | bonus.nodejs.sh selects NodeSource major 22 | Existing-major and new-install paths must pass the offline check, attempting the scoped package refresh on failure. Does not set NODE_EXTRA_CA_CERTS, which adds trust rather than replacing bundled roots. Does not override explicit app ca or service options. |
 | Go | bonus.go.sh pins Go 1.19.5. Many applications are downloaded binaries rather than built here | Standard Linux Go system-root consumers benefit after restart. Custom/fallback/embedded pools, GODEBUG overrides, and independently built binaries need separate validation and potentially rebuilt runtimes. Updating the toolchain alone does not update existing executables. |
 | Downloaded applications and containers | Install scripts retrieve external applications | Their source and transitive dependency bundles are not fully vendored here. No claim that all installed application TLS consumers are fixed. |
 
@@ -111,10 +124,14 @@ and all 16 matched their declared SHA-256.
 
 ## Verification
 
-- `bats test/blitz.trust.bats`: 9 passing mocked shell control-flow tests.
+- `bats test/blitz.trust.bats`: 14 passing mocked shell control-flow tests,
+  using real dpkg version comparisons. Includes held Node, successful stale
+  no-ops, missing/unreviewed CA fixes, supported Node boundaries, executable
+  overrides, and execution of scratch-redirected setup and Node installer gates.
   These prove scoped arguments and stop-on-failure behavior, not actual
   Linux package installation or certificate preservation under dpkg.
-- `shellcheck home.admin/config.scripts/blitz.trust.sh`: passes.
+- ShellCheck passes for blitz.trust.sh and bonus.nodejs.sh. Bash syntax
+  checks pass for both and _provision.setup.sh; git diff --check passes.
 - Actual Debian update-ca-certificates utility, redirected entirely to scratch
   directories on the development host: two --fresh runs preserved a generated
   custom local CA, the explicit ISRG Root X1 distrust setting, and byte-identical
@@ -131,10 +148,26 @@ and all 16 matched their declared SHA-256.
   api.github.com, registry.npmjs.org, and pypi.org with HTTP 200 and verify 0.
 - The Node tarball was checked against its upstream SHASUMS256.txt.
   This audit did not independently validate the checksum file's signature.
-- Docker CLI exists on the development host but its daemon is unavailable.
-  Therefore no Debian dpkg installation, custom-anchor preservation under
-  the actual package maintainer scripts, or full image build was executed.
-  Live Debian installation and reboot acceptance remain deployment gates.
+- Separate actual Debian node acceptance, supplied and retained in the local
+  audit evidence directory `evidence-20261029/node`: the original helper
+  successfully installed ca-certificates 20250419~deb12u2 and Node 22.23.4
+  through APT. All 16 archived chains accepted against before.pem and
+  issuer-rejected against after.pem. Installed Node 22.23.4 rejected all 14
+  live incident hosts with CERT_REVOKED and accepted four positive controls
+  with HTTP 200. Python ssl, effective inspected requests, curl, and wget
+  passed 72/72 live checks across the same controls. This does not certify
+  all Python virtual environments or application overrides.
+- The old node executable 22.23.1 was extracted from the cached rollback
+  .deb without installing or downgrading: seven incident endpoints were
+  authorized, seven AAA endpoints already issuer-rejected, and four positives
+  passed. Do not conflate this with the downloaded 22.23.2 baseline above.
+- On the actual node there were no custom local anchors or explicit local
+  distrust selections. Vendor ca-certificates.conf selections changed as
+  expected (15 removed, 21 added), not byte-identically. The scratch fixture
+  preservation test above is the custom-anchor/distrust evidence, not proof
+  of preservation under actual dpkg maintainer scripts. Rollback is cached.
+- This repair was tested locally only, not installed on that node. No full
+  image build, repair deployment, or post-reboot consumer acceptance was run.
 - GitHub searches for eMudhra, emSign, ca-certificates, and CA distrust found
   no matching existing PR. Broader certificate-trust issues were unrelated.
   No Core/LND version changes are included.
@@ -163,6 +196,7 @@ exercise both default Python SSL and effective requests/certifi trust.
 - [Debian Bookworm DLA-4845-1](https://www.debian.org/lts/security/2026/dla-4845).
 - [Debian Trixie DSA-6572-1](https://www.debian.org/security/2026/dsa-6572).
 - [Debian source-package security status](https://security-tracker.debian.org/tracker/source-package/ca-certificates).
+- [Official Node October 2026 security advisory, supported lines and fixed versions](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases).
 - [Node 22.23.4 upstream changelog](https://github.com/nodejs/node/blob/v22.23.4/doc/changelogs/CHANGELOG_V22.md).
 - [Incident test service and remediation inventory](https://emudhra.we-have-a-problem.com/), [root inventory](https://emudhra.we-have-a-problem.com/roots.json), [intermediate inventory](https://emudhra.we-have-a-problem.com/impacted-intermediates.json), and [real chain fixtures](https://emudhra.we-have-a-problem.com/chains.zip).
 - [Go x509 SystemCertPool and Verify documentation](https://pkg.go.dev/crypto/x509).
