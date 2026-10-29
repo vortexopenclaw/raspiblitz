@@ -1,0 +1,36 @@
+name: Test trust refresh
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "home.admin/config.scripts/blitz.trust.sh"
+      - "home.admin/_provision.update.sh"
+      - "home.admin/config.scripts/blitz.release.sh"
+      - "build_sdcard.sh"
+      - "test/blitz.trust.bats"
+      - ".github/workflows/test-trust.yml"
+  push:
+    branches: ["dev"]
+    paths:
+      - "home.admin/config.scripts/blitz.trust.sh"
+      - "home.admin/_provision.update.sh"
+      - "home.admin/config.scripts/blitz.release.sh"
+      - "build_sdcard.sh"
+      - "test/blitz.trust.bats"
+      - ".github/workflows/test-trust.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  trust-refresh:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test tools
+        run: sudo apt-get update && sudo apt-get install -y bats shellcheck
+      - name: Test refresh control flow without changing host trust
+        run: bats test/blitz.trust.bats
+      - name: Check refresh script
+        run: shellcheck home.admin/config.scripts/blitz.trust.sh
