@@ -323,12 +323,12 @@ if [ "$1" = "1" ] || [ "$1" = "on" ]; then
      exit 1
   fi
   # see https://github.com/raspiblitz/raspiblitz/issues/4169 - requires a Cython upgrade.
-  sudo -u blitzapi ./venv/bin/pip install --upgrade pip
+  sudo -u blitzapi /home/admin/config.scripts/blitz.python-trust.sh pip ./venv/bin/python || exit 1
   if ! sudo -u blitzapi ./venv/bin/pip install --upgrade Cython; then
     echo "error='pip install upgrade Cython'"
   fi
   echo "# Installing dependencies from requirements.txt ..."
-  sudo -u blitzapi ./venv/bin/python -m pip install --upgrade pip
+
   echo -e "[global]\nindex-url = https://pypi.org/simple" | sudo tee /etc/pip.conf > /dev/nul
   # install with https://www.piwheels.org/simple turned off to avoid issues with some packages
   sudo -u blitzapi env PIP_CONFIG_FILE=/dev/null PIP_INDEX_URL=https://pypi.org/simple PIP_EXTRA_INDEX_URL= ./venv/bin/pip install --no-cache-dir rich-toolkit==0.14.6
@@ -337,6 +337,8 @@ if [ "$1" = "1" ] || [ "$1" = "on" ]; then
     echo "error='pip install failed'"
     exit 1
   fi
+
+  sudo -u blitzapi /home/admin/config.scripts/blitz.python-trust.sh app ./venv/bin/python || exit 1
 
   # prepare systemd service
   echo "# Creating blitzapi systemd service..."
@@ -485,17 +487,21 @@ if [ "$1" = "update-code" ]; then
         exit 1
     fi
 
+    # Also repair pip when the application commit has not changed.
+    sudo -u blitzapi /home/admin/config.scripts/blitz.python-trust.sh pip ./venv/bin/python || exit 1
     newCommit=$(sudo -u blitzapi git rev-parse HEAD)
     if [ "${oldCommit}" != "${newCommit}" ]; then
       echo "# Code changed, updating dependencies..."
-      sudo -u blitzapi ./venv/bin/pip install --upgrade pip
+
       if ! sudo -u blitzapi ./venv/bin/pip install -r requirements.txt --no-deps; then
-         echo "# WARNING: pip install failed during update. Services might not start correctly."
+         echo "# ERROR: pip install failed during update. Services remain stopped."
+         exit 1
       fi
     else
       echo "# no code changes"
     fi
 
+    sudo -u blitzapi /home/admin/config.scripts/blitz.python-trust.sh app ./venv/bin/python || exit 1
     echo "# Restarting services..."
     systemctl start blitzapi blitzapi-celery-worker blitzapi-celery-beat
 

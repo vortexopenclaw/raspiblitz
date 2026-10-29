@@ -135,6 +135,9 @@ if [ "$1" = "install" ]; then
       exit 1
     fi
   fi
+  # JoinMarket's Twisted runtime uses OS roots, but its pip has a separate bundle.
+  sudo -u joinmarket /home/admin/config.scripts/blitz.python-trust.sh pip \
+    /home/joinmarket/joinmarket-clientserver/jmvenv/bin/python || exit 1
   exit 0
 fi
 
