@@ -6,6 +6,11 @@ python3.11 -m unittest discover -s tests -p 'test_python_trust_bootstrap.py' -v
 No services, SSH, or system package writes. Linux system installation still
 requires operator acceptance on Debian; the target test uses a temporary path.
 """
+import contextlib
+import http.server
+import json
+import ssl
+import threading
 import os
 from pathlib import Path
 import shutil
@@ -100,6 +105,52 @@ class Bootstrap(unittest.TestCase):
             result = self.run_cmd([sys.executable, '-c', code], ok=False)
             self.assertEqual(result.returncode == 0, accepted, result.stderr)
 
+    def test_rich_toolkit_override_preserves_configured_policy(self):
+        source = (ROOT / 'home.admin/config.scripts/blitz.web.api.sh').read_text()
+        line = next(line for line in source.splitlines() if 'rich-toolkit==0.14.6' in line)
+        tokens = shlex.split(line)
+        overrides = {}
+        for token in tokens[tokens.index('env') + 1:]:
+            if '=' not in token:
+                break
+            key, value = token.split('=', 1)
+            overrides[key] = value
+        self.assertNotIn('PIP_CONFIG_FILE', overrides)
+        self.assertEqual(overrides['PIP_EXTRA_INDEX_URL'], ' ')
+        config = self.base / 'operator-policy.conf'
+        constraints = self.base / 'operator-policy-constraints.txt'
+        constraints.write_text('pip==26.0.1\n')
+        content = ('[global]\nindex-url = https://mirror.example.invalid/simple\n'
+                   'extra-index-url = https://www.piwheels.org/simple\n'
+                   f'constraint = {constraints}\ncert = {self.ca}\n')
+        config.write_text(content)
+        env = {key: value for key, value in os.environ.items() if not key.startswith('PIP_')}
+        env.update(PIP_CONFIG_FILE=str(config), PIP_DISABLE_PIP_VERSION_CHECK='1')
+        python = self.venv('26.0.1')
+        probe = ('import json;from pip._internal.commands import create_command;'
+                 'o,_=create_command("install").parse_args([]);'
+                 'print(json.dumps([o.index_url,o.extra_index_urls,o.constraints,o.cert]))')
+        effective = dict(env, **overrides)
+        options = json.loads(self.run_cmd([str(python), '-c', probe], env=effective).stdout)
+        self.assertEqual(options, ['https://pypi.org/simple', [], [str(constraints)], str(self.ca)])
+        result = self.run_cmd([str(python), '-m', 'pip', 'install', '--no-index',
+                               '--find-links', str(self.wheels), 'pip==26.2.2'],
+                              env=effective, ok=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('conflict', (result.stdout + result.stderr).lower())
+        restored = json.loads(self.run_cmd([str(python), '-c', probe], env=env).stdout)
+        self.assertEqual(restored[:2], ['https://mirror.example.invalid/simple',
+                                       ['https://www.piwheels.org/simple']])
+        self.assertEqual(config.read_text(), content)
+        start = source.index('  # Keep the rich-toolkit PyPI workaround')
+        end = source.index('  if ! "${pip_sudo[@]}" ./venv/bin/pip install --no-cache-dir -r requirements.txt', start)
+        block = source[start:end]
+        self.assertNotIn('/etc/pip.conf', block)
+        failure = self.run_cmd(['bash', '-c', 'pip_sudo=(sudo)\nsudo() { return 1; }\n' +
+                                block + '\necho NEXT_PACKAGE\n'], ok=False)
+        self.assertEqual(failure.returncode, 1)
+        self.assertNotIn('NEXT_PACKAGE', failure.stdout)
+
     def test_actual_modern_pip26(self):
         result = self.helper(self.venv('26.0.1'))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -115,6 +166,142 @@ class Bootstrap(unittest.TestCase):
         env = {k: v for k, v in self.env.items() if k not in ('PIP_NO_INDEX', 'PIP_FIND_LINKS')}
         result = self.helper(python, env=env)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    @contextlib.contextmanager
+    def https_wheel(self):
+        path = self.base / (self.id().split('.')[-1] + '-https')
+        path.mkdir()
+        config = path / 'openssl.cnf'
+        config.write_text('[req]\ndistinguished_name=dn\nx509_extensions=ext\nprompt=no\n'
+                          '[dn]\nCN=localhost\n[ext]\nbasicConstraints=critical,CA:TRUE\n'
+                          'keyUsage=critical,digitalSignature,keyEncipherment,keyCertSign\n'
+                          'extendedKeyUsage=serverAuth\nsubjectKeyIdentifier=hash\n'
+                          'authorityKeyIdentifier=keyid:always\nsubjectAltName=DNS:localhost\n')
+        cert, key = path / 'ca.pem', path / 'key.pem'
+        self.run_cmd(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+                      '-days', '1', '-config', str(config), '-out', str(cert), '-keyout', str(key)])
+        wheel = self.wheels / 'pip-26.2.2-py3-none-any.whl'
+        requests = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                requests.append(self.path)
+                body = wheel.read_bytes()
+                self.send_response(200)
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(('localhost', 0), Handler)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(cert, key)
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        env = dict(self.env, PIP_FIND_LINKS=f'https://localhost:{server.server_port}/{wheel.name}',
+                   PIP_NO_CACHE_DIR='1', NO_PROXY='localhost', no_proxy='localhost')
+        try:
+            yield cert, env, requests
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+    def test_https_explicit_ca_precedence(self):
+        python = self.venv('23.0.1')
+        with self.https_wheel() as (cert, env, requests):
+            config = self.base / 'https-cert.conf'
+            # The public fallback bundle cannot authenticate this private server.
+            negative = self.helper(python, env=dict(env, PIP_RETRIES='0'))
+            self.assertNotEqual(negative.returncode, 0)
+            self.assertIn('CERTIFICATE_VERIFY_FAILED', negative.stdout + negative.stderr)
+            self.assertEqual(requests, [])
+            for version in ('23.0.1', '26.0.1'):
+                for selected in ('REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE', 'PIP_CERT', 'config', 'SSL_CERT_FILE', 'argument'):
+                    with self.subTest(version=version, selected=selected):
+                        self.run_cmd([str(python), '-m', 'pip', 'install', 'pip==' + version])
+                        config.write_text('[global]\ncert = ' + str(cert if selected == 'config' else self.ca) + '\n')
+                        policy = dict(env, PIP_CONFIG_FILE=str(config))
+                        if selected in ('REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE', 'PIP_CERT'):
+                            policy[selected] = str(cert)
+                            policy['SSL_CERT_FILE'] = str(self.ca)
+                        elif selected in ('SSL_CERT_FILE', 'argument'):
+                            config.write_text('[global]\n')
+                            if selected == 'SSL_CERT_FILE':
+                                policy[selected] = str(cert)
+                        if selected == 'REQUESTS_CA_BUNDLE':
+                            policy['CURL_CA_BUNDLE'] = str(self.ca)
+                        before = len(requests)
+                        result = self.helper(python, ca=cert if selected == 'argument' else self.ca, env=policy)
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertGreater(len(requests), before)
+                        self.assertIn('26.2.2', self.run_cmd([str(python), '-m', 'pip', '--version']).stdout)
+
+    def test_explicit_unsafe_ca_refused_before_https(self):
+        python = self.venv('26.0.1')
+        malformed = self.base / 'broken-ca.pem'
+        malformed.write_text('not a certificate\n')
+        with self.https_wheel() as (cert, env, requests):
+            for source in ('REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE', 'PIP_CERT', 'config', 'SSL_CERT_FILE'):
+                for bad in (self.bad_ca, malformed, self.base / 'missing-ca.pem'):
+                    with self.subTest(source=source, bad=bad):
+                        policy = dict(env, REQUESTS_CA_BUNDLE=str(cert))
+                        if source == 'config':
+                            config = self.base / 'bad-cert.conf'
+                            config.write_text('[global]\ncert = ' + str(bad) + '\n')
+                            policy['PIP_CONFIG_FILE'] = str(config)
+                        else:
+                            policy[source] = str(bad)
+                        result = self.helper(python, env=policy)
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertEqual(requests, [])
+                        self.assertIn('26.0.1', self.run_cmd([str(python), '-m', 'pip', '--version']).stdout)
+
+    def test_explicit_ca_postconditions(self):
+        python = self.venv('26.2.2')
+        # Install the real fixed standalone certifi files shipped in the wheel.
+        site = Path(self.run_cmd([str(python), '-c', 'import sysconfig; print(sysconfig.get_path("purelib"))']).stdout.strip())
+        with zipfile.ZipFile(self.wheels / 'pip-26.2.2-py3-none-any.whl') as wheel:
+            for name in wheel.namelist():
+                if name.startswith('pip/_vendor/certifi/') and not name.endswith('/'):
+                    dest = site / name.removeprefix('pip/_vendor/')
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(wheel.read(name))
+        clean_app = self.helper(python, mode='app')
+        self.assertEqual(clean_app.returncode, 0, clean_app.stdout + clean_app.stderr)
+        override = self.base / 'postcheck.pem'
+        for source in ('REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE', 'PIP_CERT', 'config', 'SSL_CERT_FILE'):
+            for bad in (self.bad_ca.read_text(), 'broken certificate\n'):
+                for mode in ('app', 'pip'):
+                    with self.subTest(source=source, bad=bad[:20], mode=mode):
+                        policy = dict(self.env)
+                        if source == 'config':
+                            config = self.base / 'postcheck.conf'
+                            config.write_text('[global]\ncert = ' + str(override) + '\n')
+                            policy['PIP_CONFIG_FILE'] = str(config)
+                        else:
+                            policy[source] = str(override)
+                        wrapper = python.parent / 'postcheck-python'
+                        if mode == 'pip':
+                            override.write_bytes(self.ca.read_bytes())
+                            # Mutation at install boundary forces the actual pip postcheck
+                            # (not merely the pre-download validation) to reject the file.
+                            payload = self.base / 'postcheck-input.pem'
+                            payload.write_text(bad)
+                            wrapper.write_text('#!/bin/bash\nif [ "$1" = -m ] && [ "$2" = pip ]; then\n'
+                                               'cp ' + shlex.quote(str(payload)) + ' ' + shlex.quote(str(override)) +
+                                               '\nexit $?\nfi\nexec ' + shlex.quote(str(python)) + ' "$@"\n')
+                            wrapper.chmod(0o755)
+                        else:
+                            override.write_text(bad)
+                        result = self.helper(wrapper if mode == 'pip' else python, env=policy, mode=mode)
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertEqual(override.read_text(), bad)
+                        self.assertIn('Affected emSign anchor' if 'BEGIN CERTIFICATE' in bad
+                                      else 'No trust anchors found', result.stderr)
 
     def test_postcondition_rejects_unchanged_affected_pip(self):
         python = self.venv('26.0.1')

@@ -338,10 +338,13 @@ if [ "$1" = "1" ] || [ "$1" = "on" ]; then
   fi
   echo "# Installing dependencies from requirements.txt ..."
 
-  echo -e "[global]\nindex-url = https://pypi.org/simple" | sudo tee /etc/pip.conf > /dev/nul
-  # install with https://www.piwheels.org/simple turned off to avoid issues with some packages
-  "${pip_sudo[@]}" env PIP_CONFIG_FILE=/dev/null PIP_INDEX_URL=https://pypi.org/simple PIP_EXTRA_INDEX_URL= ./venv/bin/pip install --no-cache-dir rich-toolkit==0.14.6
-  echo -e "[global]\nindex-url = https://pypi.org/simple\nextra-index-url = https://www.piwheels.org/simple" | sudo tee /etc/pip.conf > /dev/null
+  # Keep the rich-toolkit PyPI workaround local to this command. Do not rewrite
+  # operator configuration or discard configured CA files and constraints.
+  # A whitespace-only list clears extra indexes; pip ignores an empty env value.
+  if ! "${pip_sudo[@]}" env PIP_INDEX_URL=https://pypi.org/simple PIP_EXTRA_INDEX_URL=' ' ./venv/bin/pip install --no-cache-dir rich-toolkit==0.14.6; then
+    echo "error='pip install rich-toolkit failed'" >&2
+    exit 1
+  fi
   if ! "${pip_sudo[@]}" ./venv/bin/pip install --no-cache-dir -r requirements.txt --no-deps; then
     echo "error='pip install failed'"
     exit 1

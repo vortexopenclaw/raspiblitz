@@ -15,9 +15,33 @@ BlitzAPI releases can receive the same certifi-only package update without
 installing the current development branch's unrelated requirements.
 
 RaspiBlitz updates pip independently and checks the resulting vendored
-bundle. `blitz.python-trust.sh pip PYTHON [BOOTSTRAP_CA_FILE]` uses the reviewed
-system CA bundle for bootstrap, including its local anchors, and requests
-`pip>=26.2.2`. It does not bypass package constraints or edit any trust bundle.
+bundle. `blitz.python-trust.sh pip PYTHON [BOOTSTRAP_CA_FILE]` requests
+`pip>=26.2.2`. Bootstrap CA-file precedence is the first nonempty value in:
+
+1. `REQUESTS_CA_BUNDLE`;
+2. `CURL_CA_BUNDLE` (Requests' fallback when the first is unset/empty);
+3. pip's effective install `cert` option (`PIP_CERT` or pip configuration,
+   resolved by pip itself);
+4. `SSL_CERT_FILE`;
+5. the explicit third positional `BOOTSTRAP_CA_FILE` argument;
+6. `/etc/ssl/certs/ca-certificates.crt` if that argument is omitted/empty.
+
+The positional argument is a fallback, not a force-override of existing client
+policy. Requests environment values take precedence over pip's `--cert` in
+actual requests sessions. The helper selects and validates the file before
+any pip download, then scopes that same file to `--cert` and Requests/SSL
+variables for the bootstrap command only. It does not change the caller's
+settings, package constraints, indexes, configuration files, or trust bundles.
+All nonempty environment/pip CA-file overrides (including shadowed files) are
+checked for affected anchors and parseability before bootstrap and again in
+pip/app postconditions: later requirements and application clients can select
+them differently. The positional/default file is checked when selected for
+bootstrap; it is not an application configuration override. A missing,
+affected, malformed, or directory-valued CA-file override fails closed. No scan
+of `SSL_CERT_DIR`, lazy OpenSSL CA directories, macOS native trust, or per-request
+application overrides is claimed. Refreshed,
+reviewed OS trust remains a deployment precondition, even when an explicit
+file authenticates bootstrap; this helper does not refresh OS trust itself.
 The outer RaspiBlitz sudo boundary matters: preserving policy only inside
 JoininBox is too late if its owner invocation has already discarded it.
 BlitzAPI helper calls and subsequent pip downloads/requirements resolution,
@@ -30,9 +54,13 @@ must already reach the RaspiBlitz script: an operator invoking it via an outer
 sudo must explicitly preserve these same policy names there as well. These
 hooks cannot recover variables discarded before script entry.
 
-An incompatible pip pin, stale index, unsafe bootstrap bundle, or affected
-post-install bundle stops the operation. For a deliberately separate custom
-CA bundle, explicitly supply that reviewed bundle as the third argument.
+An incompatible pip pin, stale index, unsafe selected/explicit CA file, or
+affected post-install bundle stops the operation. Supply a separate reviewed
+bootstrap fallback as the third argument, or retain explicit client CA policy
+using the precedence above. The rich-toolkit PyPI workaround is per-command:
+it sets only `PIP_INDEX_URL` and a whitespace-only `PIP_EXTRA_INDEX_URL` to clear
+extra indexes (an empty value is ignored by pip). It retains configured CA and
+constraint policy, leaves `/etc/pip.conf` unchanged, and fails on install error.
 
 `--cert` alone does not remove modern pip's already-loaded vendored roots.
 The helper inspects pip's accepted deprecated-option choices: modern pip uses
@@ -164,6 +192,16 @@ model, including values containing whitespace/newlines, all CA settings, and
 exclusion of unrelated execution variables. The production update block also
 runs real pip with incompatible helper and later requirements constraints;
 both failures leave services stopped. It never starts a real service.
+All 21 existing tests, including the per-command rich-toolkit configuration and
+failure gate regression, remain. Three CA-file regressions bring the suite to
+24 tests: real private-CA HTTPS wheel upgrades exercise six selection paths on
+both pip 23 and 26 (12 successful HTTPS bootstraps), paired with a wrong-fallback
+certificate-validation failure; affected/malformed/missing explicit files are
+refused before any HTTP request, including shadowed lower-priority files; and
+both app and pip postconditions reject affected/broken overrides. The pip
+postcondition fixture mutates an initially clean override at the install
+boundary, so a precheck alone cannot pass it. HTTPS fixtures use the standard
+library and existing `openssl`, with no added package dependencies.
 Debian scheme selection in the automated suite uses platform/path fixtures.
 Separately, all four helper modes were executed successfully on the Debian 12
 node: system pip, BlitzAPI pip, BlitzAPI application certifi, and JoinMarket pip.

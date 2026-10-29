@@ -11,15 +11,26 @@ case "$mode" in
 esac
 
 check_bundle() {
-  "$python" - "$1" <<'PY'
+  "$python" - "$1" "$bootstrap_ca" <<'PY'
 import hashlib
+import os
 import pathlib
 import re
 import ssl
 import sys
 
 mode = sys.argv[1]
-if mode == "pip":
+# Requests environment overrides pip's --cert. Preserve that effective order;
+# SSL_CERT_FILE and the positional bundle are lower-priority bootstrap fallbacks.
+from pip._internal.commands import create_command
+options, _ = create_command("install").parse_args([])
+overrides = [os.environ.get("REQUESTS_CA_BUNDLE"), os.environ.get("CURL_CA_BUNDLE"),
+             options.cert, os.environ.get("SSL_CERT_FILE")]
+overrides = [path for path in overrides if path]
+selected = next(iter(overrides), sys.argv[2])
+if mode == "bootstrap":
+    bundle = selected
+elif mode == "pip":
     from pip._vendor import certifi
     bundle = certifi.where()
 elif mode == "app":
@@ -31,16 +42,19 @@ blocked = {
     "86a1ecba089c4a8d3bbe2734c612ba341d813e043cf9e8a862cd5c57a36bbe6b",
     "d7a7a0fb5d7e2731d771e9484ebcdef71d5f0c3e0a2948782bc83ee0ea699ef4",
 }
-pem = pathlib.Path(bundle).read_text(encoding="ascii")
-certs = re.findall(r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", pem, re.S)
-if not certs:
-    sys.exit("No trust anchors found; refusing to continue")
-roots = {hashlib.sha256(ssl.PEM_cert_to_DER_cert(c)).hexdigest() for c in certs}
-if roots & blocked:
-    sys.exit("Affected emSign anchor remains in Python trust store; update its owner package")
-# Parse the complete file, not only the matching PEM blocks.
-ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_verify_locations(bundle)
-print("Python trust bundle check passed")
+# Check even shadowed explicit files: later requirements/application clients may
+# select them differently. Directories/lazy native stores are outside this check.
+for path in dict.fromkeys([bundle] + overrides):
+    pem = pathlib.Path(path).read_text(encoding="ascii")
+    certs = re.findall(r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", pem, re.S)
+    if not certs:
+        sys.exit("No trust anchors found; refusing to continue")
+    roots = {hashlib.sha256(ssl.PEM_cert_to_DER_cert(c)).hexdigest() for c in certs}
+    if roots & blocked:
+        sys.exit("Affected emSign anchor remains in Python trust store; update its owner package")
+    # Parse the complete file, not only the matching PEM blocks.
+    ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_verify_locations(path)
+print(selected if mode == "bootstrap" else "Python trust bundle check passed")
 PY
 }
 
@@ -50,7 +64,7 @@ import sys
 if sys.version_info < (3, 10):
     sys.exit("Python >=3.10 is required for the fixed pip>=26.2.2; upgrade the image/Python first")
 PY
-  check_bundle "$bootstrap_ca"
+  bootstrap_ca=$(check_bundle bootstrap)
   # Old pip defaults to certifi alone and does not know legacy-certs. Modern
   # pip preloads vendor roots into truststore, so --cert alone is additive.
   legacy=()
