@@ -433,6 +433,67 @@ sudo() {
 
 
 class RestartPaths(unittest.TestCase):
+    def test_joininbox_verified_release_gate_before_owner(self):
+        source = (ROOT / 'home.admin/config.scripts/bonus.joinmarket.sh').read_text()
+        start = source.index('    # The late pip posthook')
+        end = source.index('    echo "# Set ssh access off', start)
+        self.assertLess(source.index('"${PGPpubkeyFingerprint}" "${JBTAG}" || exit 1'), start)
+        self.assertLess(source.index('cp /home/joinmarket/joininbox/scripts/*'), start)
+        self.assertLess(end, source.index('"${pip_sudo[@]}" /home/joinmarket/install.joinmarket.sh'))
+        self.assertIn('JBTAG="v0.9.0"', source)
+        hooks = ('  "${trust_sudo[@]}" python3 "${trust_scripts}/joinmarket-python-trust.py" prerequisites || exit 1\n'
+                 '  "${trust_sudo[@]}" patch --batch --forward --fuzz=0 -p1 < "${trust_scripts}/joinmarket-python-trust.patch" || exit 1\n'
+                 '  sudo -u "${user}" cp "${trust_scripts}/joinmarket-python-trust.py" install-python-trust.py || exit 1\n')
+        names = ('install.joinmarket.sh', 'joinmarket-python-trust.py', 'joinmarket-python-trust.patch')
+        for case in ('legacy', 'untracked-helpers', 'untracked-new-installer', 'no-hooks',
+                     'commented-hooks', 'copied-tamper', 'missing-copy', 'reviewed'):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temp:
+                home = Path(temp)
+                repo = home / 'joininbox'
+                scripts = repo / 'scripts'
+                scripts.mkdir(parents=True)
+                legacy = case in ('legacy', 'untracked-helpers', 'untracked-new-installer')
+                installer = '#!/bin/bash\n' + (hooks if not legacy and case != 'no-hooks' else 'exit 0\n')
+                if case == 'commented-hooks':
+                    installer = '#!/bin/bash\n' + ''.join('#' + line + '\n' for line in hooks.splitlines())
+                (scripts / names[0]).write_text(installer)
+                if not legacy:
+                    (scripts / names[1]).write_text('# mock owner helper\n')
+                    (scripts / names[2]).write_text('# mock archived installer backport\n')
+
+                def git(*args):
+                    result = subprocess.run(['git', '-c', 'user.name=Trust Fixture',
+                                             '-c', 'user.email=fixture@example.invalid', *args],
+                                            cwd=repo, text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+                git('init', '-q')
+                git('add', 'scripts')
+                git('commit', '-qm', 'Synthetic release gate fixture')
+                git('tag', 'v0.9.0')
+                if case in ('untracked-helpers', 'untracked-new-installer'):
+                    (scripts / names[1]).write_text('# stale untracked helper\n')
+                    (scripts / names[2]).write_text('# stale untracked backport\n')
+                    if case == 'untracked-new-installer':
+                        (scripts / names[0]).write_text('#!/bin/bash\n' + hooks)
+                for file in scripts.iterdir():
+                    shutil.copy(file, home / file.name)
+                if case == 'copied-tamper':
+                    (home / names[1]).write_text('# different helper\n')
+                elif case == 'missing-copy':
+                    (home / names[2]).unlink()
+                gate = source[start:end].replace('/home/joinmarket', str(home))
+                # Existing signature verification is an earlier owner boundary;
+                # this tests the real gate using real Git refs and copied files.
+                header = 'JBTAG=v0.9.0\nsudo() { shift 2; "$@"; }\n'
+                result = subprocess.run(['bash', '-c', header + gate + '\necho OWNER_INVOKED\n'],
+                                        text=True, capture_output=True)
+                accepted = case == 'reviewed'
+                self.assertEqual(result.returncode == 0, accepted, result.stdout + result.stderr)
+                self.assertEqual('OWNER_INVOKED' in result.stdout, accepted)
+                if not accepted:
+                    self.assertIn('maintained signed JoininBox release', result.stderr)
+
     def test_download_policy_at_every_outer_boundary(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp)

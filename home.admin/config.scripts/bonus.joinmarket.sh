@@ -91,6 +91,24 @@ if [ "$1" = "install" ]; then
     sudo -u joinmarket cp /home/joinmarket/joininbox/scripts/.* /home/joinmarket/ 2>/dev/null
     sudo chmod +x /home/joinmarket/*.sh
 
+    # The late pip posthook cannot secure an old owner's first pip download.
+    # Bind copied files to the verified tag: reset --hard leaves untracked
+    # helpers behind, so file presence alone is not a release capability gate.
+    if ! (
+      set -o pipefail
+      for file in install.joinmarket.sh joinmarket-python-trust.py joinmarket-python-trust.patch; do
+        [ -s "/home/joinmarket/${file}" ] || exit 1
+        sudo -u joinmarket git -C /home/joinmarket/joininbox show "${JBTAG}:scripts/${file}" |
+          cmp -s - "/home/joinmarket/${file}" || exit 1
+      done
+      grep -Fqx '  "${trust_sudo[@]}" python3 "${trust_scripts}/joinmarket-python-trust.py" prerequisites || exit 1' /home/joinmarket/install.joinmarket.sh &&
+        grep -Fqx '  "${trust_sudo[@]}" patch --batch --forward --fuzz=0 -p1 < "${trust_scripts}/joinmarket-python-trust.patch" || exit 1' /home/joinmarket/install.joinmarket.sh &&
+        grep -Fqx '  sudo -u "${user}" cp "${trust_scripts}/joinmarket-python-trust.py" install-python-trust.py || exit 1' /home/joinmarket/install.joinmarket.sh
+    ); then
+      echo "error='A maintained signed JoininBox release containing the Python bootstrap fix is required; refusing to run the owner installer'" >&2
+      exit 1
+    fi
+
     echo "# Set ssh access off with the joinmarket user"
     sudo /home/joinmarket/set.ssh.sh off
 

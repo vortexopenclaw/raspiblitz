@@ -116,9 +116,16 @@ and requires Python >=3.10. Deployment still needs a maintainer-signed new
 [JoininBox release](https://github.com/openoms/joininbox/releases) containing
 that repair, followed by a reviewed `JBTAG` update and the existing signature
 verification. `JBTAG=v0.9.0` is deliberately unchanged here: a fork or unsigned
-commit is not a substitute for that owner release. The outer policy forwarding
-in this patch is necessary, but does not make the existing pin contain the
-pending bootstrap repair.
+commit is not a substitute for that owner release. Before invoking the copied
+owner installer, RaspiBlitz now requires the helper, archived-installer backport,
+and installer itself to match their tracked bytes in the already verified tag.
+It also requires the reviewed prerequisite/bootstrap/backport hook lines in the
+actual copied installer. Missing files, stale untracked helpers surviving
+`git reset --hard`, a legacy installer, or copied-file mismatches fail with an
+explicit maintained-signed-release requirement before owner invocation.
+Consequently the unchanged old pin is intentionally refused for new installs;
+policy forwarding or a late posthook cannot make it safe. This gate does not
+repair or intercept independent JoininBox self-updates.
 
 ## Verified release artifacts
 
@@ -193,15 +200,21 @@ exclusion of unrelated execution variables. The production update block also
 runs real pip with incompatible helper and later requirements constraints;
 both failures leave services stopped. It never starts a real service.
 All 21 existing tests, including the per-command rich-toolkit configuration and
-failure gate regression, remain. Three CA-file regressions bring the suite to
-24 tests: real private-CA HTTPS wheel upgrades exercise six selection paths on
+failure gate regression, remain. Four new regressions bring the suite to
+25 tests. Three cover CA files: real private-CA HTTPS wheel upgrades exercise six selection paths on
 both pip 23 and 26 (12 successful HTTPS bootstraps), paired with a wrong-fallback
 certificate-validation failure; affected/malformed/missing explicit files are
 refused before any HTTP request, including shadowed lower-priority files; and
 both app and pip postconditions reject affected/broken overrides. The pip
 postcondition fixture mutates an initially clean override at the install
 boundary, so a precheck alone cannot pass it. HTTPS fixtures use the standard
-library and existing `openssl`, with no added package dependencies.
+library and existing `openssl`, with no added package dependencies. The fourth
+executes the actual owner release gate with real temporary Git refs/copies and
+eight synthetic cases: old release, untracked leftover helpers, an untracked
+new installer, missing hooks, commented-out hooks, tampered copies, missing
+copies, and a matching reviewed-hook fixture. Only the last reaches the
+simulated owner invocation. This tests gate ordering and release linkage, not
+upstream signature verification or a full JoinMarket native build.
 Debian scheme selection in the automated suite uses platform/path fixtures.
 Separately, all four helper modes were executed successfully on the Debian 12
 node: system pip, BlitzAPI pip, BlitzAPI application certifi, and JoinMarket pip.
