@@ -66,6 +66,14 @@ class Bootstrap(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('26.2.2', self.run_cmd([str(python), '-m', 'pip', '--version']).stdout)
 
+    def test_standalone_helper_trust_gate(self):
+        source = (ROOT / 'build_sdcard.sh').read_text()
+        gate = source.split("/usr/bin/python3 - <<'PY' || exit 1\n", 1)[1].split('\nPY\n', 1)[0]
+        for bundle, accepted in ((self.ca, True), (self.bad_ca, False)):
+            code = gate.replace('"/etc/ssl/certs/ca-certificates.crt"', repr(str(bundle)))
+            result = self.run_cmd([sys.executable, '-c', code], ok=False)
+            self.assertEqual(result.returncode == 0, accepted, result.stderr)
+
     def test_actual_modern_pip26(self):
         result = self.helper(self.venv('26.0.1'))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -208,33 +216,103 @@ sudo() {
 
     def test_image_checkout_and_standalone_fail_closed(self):
         source = (ROOT / 'build_sdcard.sh').read_text()
-        block = source[source.index('trust_helper='):source.index('sudo -H python3 -m pip install grpcio')]
+        block = source[source.index('# Refresh through signed APT'):source.index('sudo -H python3 -m pip install grpcio')]
+        block = block.replace("/usr/bin/python3 - <<", "python3 - <<")
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             helper = root / 'home.admin/config.scripts/blitz.python-trust.sh'
             helper.parent.mkdir(parents=True)
             script = root / 'build.sh'
             header = '''
-sudo() { echo helper-invoked; return "$HELPER_STATUS"; }
-wget() { echo helper-fetched; return "$FETCH_STATUS"; }
+sudo() {
+  case "$*" in
+    'apt-get -o APT::Update::Error-Mode=any update') echo apt-index; return "$INDEX_STATUS" ;;
+    'apt-get install --only-upgrade -y ca-certificates') echo apt-ca; return "$APT_STATUS" ;;
+    'update-ca-certificates --fresh') echo bundle-refresh; return "$REFRESH_STATUS" ;;
+    '-H bash '*) echo helper-invoked; return "$HELPER_STATUS" ;;
+    *) echo unexpected-command >&2; return 99 ;;
+  esac
+}
+wget() {
+  [[ "$*" = '--no-config --https-only --ca-certificate=/etc/ssl/certs/ca-certificates.crt -O '* ]] || return 99
+  echo helper-fetched; return "$FETCH_STATUS"
+}
+python3() { cat >/dev/null; echo bundle-verified; return "$CA_STATUS"; }
 '''
             script.write_text(header + block + '\necho next-download\n')
-            for checkout, helper_status, fetch_status, expected in (
-                    (True, 0, 0, True), (True, 1, 0, False),
-                    (False, 0, 0, True), (False, 1, 0, False), (False, 0, 1, False)):
+            for checkout in (True, False):
                 if checkout:
                     helper.touch()
                 else:
                     helper.unlink(missing_ok=True)
-                result = subprocess.run(['bash', str(script)], text=True, capture_output=True,
-                                        env=dict(os.environ, HELPER_STATUS=str(helper_status),
-                                                 FETCH_STATUS=str(fetch_status), TMPDIR=temp))
-                self.assertEqual('next-download' in result.stdout, expected, result.stdout + result.stderr)
-                if not checkout and fetch_status:
-                    self.assertNotIn('helper-invoked', result.stdout)
+                failures = ('', 'INDEX', 'APT', 'REFRESH', 'CA', 'HELPER')
+                if not checkout:
+                    failures += ('FETCH',)
+                for failure in failures:
+                    with self.subTest(checkout=checkout, failure=failure):
+                        statuses = {name + '_STATUS': str(int(name == failure))
+                                    for name in ('INDEX', 'APT', 'REFRESH', 'CA', 'HELPER', 'FETCH')}
+                        result = subprocess.run(['bash', str(script)], text=True, capture_output=True,
+                                                env=dict(os.environ, **statuses, TMPDIR=temp))
+                        self.assertEqual(result.returncode == 0, not failure, result.stdout + result.stderr)
+                        self.assertEqual('next-download' in result.stdout, not failure, result.stdout + result.stderr)
+                        if failure in ('INDEX', 'APT', 'REFRESH', 'CA', 'FETCH'):
+                            self.assertNotIn('helper-invoked', result.stdout)
+                        if failure in ('INDEX', 'APT', 'REFRESH', 'CA'):
+                            self.assertNotIn('helper-fetched', result.stdout)
+                        if not failure:
+                            events = ['apt-index', 'apt-ca', 'bundle-refresh', 'bundle-verified']
+                            if not checkout:
+                                events.append('helper-fetched')
+                            events += ['helper-invoked', 'next-download']
+                            self.assertEqual(result.stdout.splitlines(), events)
+
+    def test_vendor_provision_ordering(self):
+        source = (ROOT / 'home.admin/_provision.update.sh').read_text()
+        comments = '# a conversion of config data or app data is needed'
+        python_hook = '/home/admin/config.scripts/blitz.python-trust.sh'
+        vendor_hook = '/home/admin/config.scripts/blitz.trust.sh update'
+        self.assertLess(source.index(comments), source.index(python_hook))
+        self.assertLess(source.index(python_hook), source.index('# if old bitcoin.conf exists'))
+        # The same regression exercises the real combined source in the merge
+        # worktree, or the companion insertion at its exact upstream anchor.
+        if vendor_hook not in source:
+            anchor = 'echo "prechecks OK"  >> ${logFile}\n'
+            source = source.replace(anchor, anchor + '\n' + vendor_hook + ' >> "${logFile}" 2>&1 || exit 1\n')
+        self.assertLess(source.index(vendor_hook), source.index(python_hook))
+        block = source[source.index('echo "prechecks OK"'):source.index('# if old bitcoin.conf exists')]
+        block = block.replace('/home/admin/config.scripts/blitz.trust.sh', 'vendor')
+        block = block.replace(python_hook, 'python_trust')
+        with tempfile.TemporaryDirectory() as temp:
+            log = Path(temp) / 'log'
+            header = '''
+vendor() { echo vendor; return "$VENDOR_STATUS"; }
+python_trust() { echo python; return "$HELPER_STATUS"; }
+'''
+            for vendor, helper in ((0, 0), (1, 0), (0, 1)):
+                result = subprocess.run(['bash', '-c', header + block + '\necho next-hook'],
+                                        env=dict(os.environ, logFile=str(log),
+                                                 VENDOR_STATUS=str(vendor), HELPER_STATUS=str(helper)),
+                                        text=True, capture_output=True)
+                events = log.read_text().splitlines()
+                self.assertEqual(events, ['prechecks OK', 'vendor'] + ([] if vendor else ['python']))
+                self.assertEqual(result.returncode == 0, not (vendor or helper))
+                self.assertEqual('next-hook' in result.stdout, not (vendor or helper))
+                log.unlink()
 
     def test_image_and_upgrade_gate(self):
         image = (ROOT / 'build_sdcard.sh').read_text()
+        events = ('sudo apt-get -o APT::Update::Error-Mode=any update || exit 1',
+                  'sudo apt-get install --only-upgrade -y ca-certificates || exit 1',
+                  'sudo update-ca-certificates --fresh || exit 1',
+                  "/usr/bin/python3 - <<'PY' || exit 1", 'trust_helper=',
+                  'wget --no-config --https-only --ca-certificate=',
+                  'sudo -H python3 -m pip install grpcio')
+        positions = [image.index(event) for event in events]
+        self.assertEqual(positions, sorted(positions))
+        # No pip package download is allowed before the bootstrap boundary.
+        commands = '\n'.join(line.split('#', 1)[0] for line in image[:positions[0]].splitlines())
+        self.assertNotRegex(commands, r'\b(?:pip[23]?\s+install|python[23]?\s+-m\s+pip\s+install)\b')
         self.assertLess(image.index('system-pip /usr/bin/python3'), image.index('pip install grpcio'))
         self.assertIn('system-pip /usr/bin/python3 || exit 1', image)
         update = (ROOT / 'home.admin/_provision.update.sh').read_text()

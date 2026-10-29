@@ -35,7 +35,22 @@ subsequent Python downloads. This Debian-only mode installs with an exact
 and bundle, and installs generated entrypoints in `/usr/local/bin`. It does not
 uninstall distribution pip or use `--prefix=/usr/local`, which Debian's
 `posix_local` scheme can expand to `/usr/local/local`. No PEP 668 override is
-added. Actual Debian system-mode execution remains an operator acceptance step.
+added. The actual Debian system-mode acceptance is recorded below.
+
+Image bootstrap explicitly refreshes `ca-certificates` through signed APT,
+rebuilds the effective bundle, and checks its DER roots offline before either
+fetching standalone helper code over HTTPS or invoking the checkout helper.
+Index, package, bundle, and root-check failures stop before Python downloads.
+Local anchors and package holds/pins are not overridden. Standalone CI builds
+need no early `/home/admin/config.scripts` installation.
+
+This is a focused companion to vendor trust PR #5326, not a copy of it.
+Combined with #5326, data updates refresh vendor trust immediately after
+prechecks, then run the Python helper after the migration preamble comments.
+The separate insertion points avoid a merge conflict and guarantee the OS
+refresh precedes pip bootstrap. The later image vendor hook still owns Node.js
+and the complete vendor-version checks. This Python-only branch does not add
+that data-update remediation, so merge/deploy it together with #5326.
 
 BlitzAPI install/update checks its standalone certifi before starting services,
 and repairs pip even if the application commit has not changed. Failures leave
@@ -124,11 +139,15 @@ It covers incompatible constraints, a stale local index, affected bootstrap
 roots, opt-in old truststore, an unchanged affected postcondition, unsupported
 Python, isolated target installation/entrypoints, and update-code restart
 branches with external commands stubbed. It never starts a real service.
-Debian scheme selection is exercised with platform/path fixtures, not a claim
-of Linux installation acceptance. Run with Python 3.10/3.11 because pip 23.0.1
-predates Python 3.12. The system-mode helper itself still needs testing on the
-node, including preservation of `/usr/lib/python3/dist-packages/pip`, selected
-`/usr/local` imports and entrypoints, and unchanged baseline dependency warnings.
+Debian scheme selection in the automated suite uses platform/path fixtures.
+Separately, all four helper modes were executed successfully on the Debian 12
+node: system pip, BlitzAPI pip, BlitzAPI application certifi, and JoinMarket pip.
+Hashes of all 491 distribution-managed pip source files remained unchanged.
+The repaired system interpreter and `/usr/local/bin/pip3` selected pip 26.2.2
+from the intended local package directory. Existing global dependency
+diagnostics remained unchanged, not clean. This verifies the helper itself,
+not full image or provisioning execution. Run the fresh-pip regression suite
+with Python 3.10/3.11 because pip 23.0.1 predates Python 3.12.
 
 ## Reproduce
 
