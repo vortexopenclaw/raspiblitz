@@ -21,6 +21,9 @@ SCRIPTS = ROOT / 'home.admin/config.scripts'
 class QuietHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
+        # Explicit framing avoids a GnuTLS wget truncation error when this
+        # short fixture closes without a TLS close_notify exchange.
+        self.send_header('Content-Length', '5')
         self.end_headers()
         self.wfile.write(b'INDEX')
 
