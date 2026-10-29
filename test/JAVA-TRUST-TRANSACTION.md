@@ -122,6 +122,10 @@ OpenJDK 17.0.19 against disposable stores. All 25 tests passed without skips,
 including an added real Linux POSIX access-ACL and user-xattr preservation case.
 That case uses the Linux UAPI ACL encoding and needs no ACL utility package.
 Owner, group, mode, ACL bytes, and unrelated xattrs survived remediation.
+CI now builds an isolated store from three frozen public CA certificates: the
+two incident identities and ISRG Root X1. It runs the complete safety suite
+without depending on the runner still trusting the incident roots. The exact
+workflow test step also passed all 25 tests on Debian without skips.
 An initial test-source package omitted the FinTS script and failed one lifecycle
 test; including the reviewed script produced the passing full rerun.
 
