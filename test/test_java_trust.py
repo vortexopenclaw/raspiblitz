@@ -31,21 +31,21 @@ class UnitTests(unittest.TestCase):
         entries = {"private": ("PrivateKeyEntry", (next(iter(fix.DENIED)),))}
         with patch.object(fix, "inventory", return_value=entries), patch.object(fix, "keytool") as tool:
             with self.assertRaisesRegex(RuntimeError, "private-key entry"):
-                fix.remediate(Path("unused"), True)
+                fix.mutate_stage(Path("unused"), True)
             self.assertEqual(tool.call_count, 1)
 
     def test_concurrent_inventory_change_aborts_before_deleting(self):
         entries = {"bad": ("trustedCertEntry", (next(iter(fix.DENIED)),))}
         with patch.object(fix, "inventory", side_effect=[entries, {}]), patch.object(fix, "keytool") as tool:
             with self.assertRaisesRegex(RuntimeError, "changed during"):
-                fix.remediate(Path("unused"), True)
+                fix.mutate_stage(Path("unused"), True)
             self.assertEqual(tool.call_count, 2)
 
     def test_unrelated_change_fails_postcondition(self):
         entries = {"good": ("trustedCertEntry", ("0" * 64,))}
         with patch.object(fix, "inventory", side_effect=[entries, {}]), patch.object(fix, "keytool"):
             with self.assertRaisesRegex(RuntimeError, "unrelated public entries"):
-                fix.remediate(Path("unused"), True)
+                fix.mutate_stage(Path("unused"), True)
 
 
 @unittest.skipUnless(os.environ.get("JAVA_TRUST_PUBLIC_LISTING"), "opt-in public certificate inventory required")

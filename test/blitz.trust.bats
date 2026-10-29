@@ -22,6 +22,8 @@ import os, pathlib, sys
 root, helper, installer, provision = sys.argv[1:]
 text = pathlib.Path(root, 'home.admin/config.scripts/blitz.trust.sh').read_text()
 text = text.replace('/home/admin/config.scripts/blitz.trust.java.py', helper + '.java.py')
+# Do not let the test host's unrelated Java installation affect image fixtures.
+text = text.replace('command -v java >/dev/null 2>&1', '[ \"${MOCK_JAVA_PRESENT:-0}\" = 1 ]')
 pathlib.Path(helper).write_text(text.replace('/etc/os-release', os.environ['OS_FILE']))
 pathlib.Path(helper + '.java.py').write_text('import os, sys\nwith open(os.environ["TRUST_LOG"], "a") as f: f.write("java-helper " + sys.argv[1] + "\\n")\nsys.exit(int(os.environ["JAVA_FAIL"]))\n')
 for source, target in [('home.admin/config.scripts/bonus.nodejs.sh', installer),
@@ -239,6 +241,21 @@ MOCK
   run bash "$SCRIPT" check
   [ "$status" -ne 0 ]
   [[ "$output" == *'Java trust check failed'* ]]
+}
+
+@test "Java executable without installed Java CA package still gates" {
+  export MOCK_JAVA_PRESENT=1 JAVA_FAIL=1
+  run bash "$SCRIPT" check
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'Java trust check failed'* ]]
+}
+
+@test "Java overrides are rejected before sudo can discard them" {
+  export JAVA_STATUS=installed JAVA_HOME=/custom/jre
+  run bash "$SCRIPT" check
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'Explicit JAVA_HOME needs separate Java trust review'* ]]
+  [ ! -e "$TRUST_LOG" ]
 }
 
 @test "fixed existing installer is offline and still enforces CA baseline" {

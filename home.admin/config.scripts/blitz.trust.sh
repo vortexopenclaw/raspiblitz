@@ -56,12 +56,16 @@ fi
 # Debian's OS refresh does not reliably propagate removals to Java (Debian
 # #1069251). A Java fresh trigger can also delete directly imported debian:
 # entries. Apply only the two reviewed incident identities, preserving others.
-if installed ca-certificates-java; then
+if installed ca-certificates-java || command -v java >/dev/null 2>&1; then
+  # sudo may discard caller overrides. Reject them before crossing that boundary.
+  for option in JAVA_HOME JRE_HOME JAVACMD JAVA_TOOL_OPTIONS _JAVA_OPTIONS JDK_JAVA_OPTIONS JAVA_OPTS MAVEN_OPTS MAVEN_ARGS MAVEN_CONFIG M2_HOME MAVEN_PROJECTBASEDIR MAVEN_BASEDIR; do
+    [ -z "${!option}" ] || fail "Explicit $option needs separate Java trust review."
+  done
   java_helper=/home/admin/config.scripts/blitz.trust.java.py
   if [ "$1" = update ]; then
     sudo python3 "$java_helper" update || fail "Java trust remediation failed."
   else
-    python3 "$java_helper" check || fail "Java trust check failed."
+    sudo python3 "$java_helper" check || fail "Java trust check failed."
   fi
 fi
 

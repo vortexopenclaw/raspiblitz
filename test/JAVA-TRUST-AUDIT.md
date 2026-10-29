@@ -52,22 +52,23 @@ anchors, so existing absent/distrusted certificates stay absent. Locally
 trusted instances of these two identities are intentionally distrusted too.
 Legitimate chains using them can stop working, as with Debian's policy.
 
-It uses `keytool -list -rfc` public output, with English JVM output explicitly
-selected. It validates entry counts/types, refuses ambiguous inventories,
-refuses affected certificates inside private-key entries, rechecks before
-each deletion, and verifies unchanged surviving public-entry inventories.
-`keytool -delete` retains unrelated opaque key entries; this helper never
-calls `getKey`, `-exportkey`, or any private-key decryption/export operation.
-Private-key byte identity was not inspected or proved. The private-entry
-refusal is unit-tested with a mocked public inventory, not live private keys.
+The helper uses `keytool -list -rfc` public output with English JVM output.
+All keytool operations, including inventory reads, operate on a protected staged
+JKS, never the live store. Entry counts, types, exact DER hashes, surviving
+public inventories, and the raw encrypted JKS private-entry records are checked.
+JKS aliases containing controls or multiline text are rejected from the binary
+container as well as the text listing. Incident certificates in a private-key
+entry require manual review. No `getKey`, private-key decryption, or key export
+operation is used. A disposable synthetic key with a distinct key password
+proves unchanged encrypted private-entry bytes; user keys are never tested.
 
-The default password is the documented public `changeit`, not a discovered
-secret. A custom password, unreadable/missing store, malformed output, or
-unsupported entry type fails closed. Do not read password configuration or
-pass private passwords through chat/logs; a custom-password store requires
-separately approved administrator remediation. Serialize all trust-store
-maintenance. Inventory rechecks detect many concurrent changes but cannot
-lock out unrelated third-party `keytool` writers.
+Only JKS is supported. Custom passwords and other container formats fail closed
+and require separate administrator review. `changeit` is the public default,
+not a discovered secret. Whole-store snapshot/staging is **opaque encrypted
+container preservation**, not private-key export. Production runs require sudo:
+root-owned mode-0700 same-filesystem work directories contain mode-0600 originals.
+See [transaction and lifecycle contract](JAVA-TRUST-TRANSACTION.md) for commit,
+rollback, interrupted cleanup, and the external-writer quiescence requirement.
 
 `blitz.trust.sh` upgrades installed `ca-certificates-java` without installing
 Java on minimal nodes, then performs this scoped update/check. The normal OS
@@ -160,7 +161,7 @@ values against `blitz.trust.java.py`, and stop on any mismatch/error. Then:
 
 ```sh
 sudo python3 /home/admin/config.scripts/blitz.trust.java.py update
-python3 /home/admin/config.scripts/blitz.trust.java.py check
+sudo python3 /home/admin/config.scripts/blitz.trust.java.py check
 ```
 
 Read back the exact public inventory and compare all surviving aliases and
