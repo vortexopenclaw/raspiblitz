@@ -78,9 +78,17 @@ function installDependencies() {
   # Install uv for Python dependency management (replaces poetry in CLN 25.x+)
   echo "# Installing uv for Python dependency management"
   if ! command -v uv &>/dev/null; then
-    sudo RUSTUP_HOME=/opt/rust CARGO_HOME=/opt/rust cargo install --locked uv || exit 1
+    sudo RUSTUP_HOME=/opt/rust CARGO_HOME=/opt/rust cargo install --locked --version 0.13.6 uv || exit 1
     # Ensure uv is symlinked into /usr/local/bin
     sudo ln -sf /opt/rust/bin/uv /usr/local/bin/uv
+  fi
+
+  # uv bundles its own TLS trust; updating Debian's CA store alone is not enough.
+  # https://github.com/astral-sh/uv/security/advisories/GHSA-hq85-5cpj-mr62
+  uvVersion=$(sudo -u bitcoin uv --version | cut -d ' ' -f 2)
+  if [[ ! "${uvVersion}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || ! dpkg --compare-versions "${uvVersion}" ge 0.13.4; then
+    echo "# ERROR: eMudhra SSL certificate fix requires uv >= 0.13.4; update uv before continuing"
+    exit 1
   fi
 
   # Sync Python dependencies with uv
