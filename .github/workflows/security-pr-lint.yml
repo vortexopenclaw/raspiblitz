@@ -15,22 +15,26 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - pr: 5334
+            sha: a55b4a73654517f4a454d54cf5ded258a4eeb6e8
+          - pr: 5333
+            sha: 516dde22ce74b376cb290f7a2148a782037b4cef
           - pr: 5332
             sha: f139ac3be94a803eb05d15b2b227416d0ba45135
           - pr: 5331
             sha: 80b3ba7f01feb1fec4c8aaf08d6eb92f6a17e7de
           - pr: 5329
-            sha: fea0f395d985502fb5ade8f27d23d807c7f2edcb
+            sha: fe8726f87f3f363b2e809862f3d8b5b5b792558b
           - pr: 5328
-            sha: d1e368b9bc5e1a94fe1bc7a663ae50beff6c73f3
+            sha: d9eff4e985d2c79599df2e8e39227e0b172f844e
           - pr: 5327
-            sha: a208f997e88879e1b6835f76166b683a4ffefe33
+            sha: fc780e3c952f78b8980de8dfeec76dec1bf549c1
           - pr: 5326
-            sha: 76ad9b26b43a4b0d4d64959822274359ad51ab85
+            sha: e846e7a4d6f95c5489d9c3857ae399587154f6d4
           - pr: 5300
-            sha: fa07eec21b004cf74ba3bdded4075da025928511
+            sha: 9433364d2c5bddc6b00933c40c9d535c22dbc2fb
           - pr: 5283
-            sha: faa70d2de1d262d60e3e808bcd946ec5b332edee
+            sha: 1134fe2b4efb1daa5a587af18d1443eb12b5d50b
     steps:
       - name: Check out exact PR head
         id: checkout
