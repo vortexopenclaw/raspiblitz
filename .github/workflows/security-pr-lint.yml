@@ -1,0 +1,50 @@
+name: Security PR lint sweep
+on:
+  push:
+    branches: ['ci/pr-health-20261031']
+    paths: ['.github/workflows/security-pr-lint.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  lint:
+    name: PR ${{ matrix.pr }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pr: 5332
+            sha: f139ac3be94a803eb05d15b2b227416d0ba45135
+          - pr: 5331
+            sha: 80b3ba7f01feb1fec4c8aaf08d6eb92f6a17e7de
+          - pr: 5329
+            sha: 1f28a4fa2bf38d528f18fd06a987083d37213d99
+          - pr: 5328
+            sha: d1e368b9bc5e1a94fe1bc7a663ae50beff6c73f3
+          - pr: 5327
+            sha: a208f997e88879e1b6835f76166b683a4ffefe33
+          - pr: 5326
+            sha: f8a87e0b707b3cca64e30a9a81b134ef846927a5
+          - pr: 5300
+            sha: fa07eec21b004cf74ba3bdded4075da025928511
+          - pr: 5283
+            sha: faa70d2de1d262d60e3e808bcd946ec5b332edee
+    steps:
+      - name: Check out exact PR head
+        id: checkout
+        uses: actions/checkout@v4
+        with:
+          repository: vortexopenclaw/raspiblitz
+          ref: ${{ matrix.sha }}
+          persist-credentials: false
+      - name: Spelling
+        uses: crate-ci/typos@512fc24f32f44ab01972217aaaf3dc86ec234d53 # v1.50.2
+        with:
+          config: typos.toml
+      - name: ShellCheck
+        if: always() && steps.checkout.outcome == 'success'
+        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
+        with:
+          severity: error
