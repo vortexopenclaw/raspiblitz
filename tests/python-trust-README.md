@@ -225,6 +225,46 @@ diagnostics remained unchanged, not clean. This verifies the helper itself,
 not full image or provisioning execution. Run the fresh-pip regression suite
 with Python 3.10/3.11 because pip 23.0.1 predates Python 3.12.
 
+## CI-enforced review regressions
+
+`.github/workflows/python-trust.yml` runs on pushes to
+`fix/independent-python-ca-trust`, pull requests, and manual dispatch. Its
+Python 3.10/3.11 jobs run all 32 bootstrap and shell tests, check syntax for
+all five changed shell scripts, and retain test logs even on failure.
+A separate Debian 12 container job runs the system-pip test without network,
+host mounts, or Linux capabilities. Building that fixture requires signed APT
+repositories and HTTPS access to PyPI; it does not disable repository validation.
+
+```sh
+python3.11 -m unittest discover -s tests -p 'test_python_trust_*.py' -v
+docker build -f tests/python-trust.Dockerfile -t python-trust-system .
+docker run --rm --network=none --cap-drop=ALL --security-opt=no-new-privileges python-trust-system
+```
+
+The matrix extends the existing 25 tests rather than duplicating them:
+
+| Review requirement | Executable assertions |
+| --- | --- |
+| Missing/old pip | `test_missing_pip_fails_before_download` refuses an unseeded venv; fresh pip 23 and modern pip 26 upgrades use real wheels and HTTPS; old opt-in truststore and unsupported Python fail closed. |
+| CA/environment policy | `test_https_explicit_ca_precedence` authenticates a private HTTPS server through all six selection paths on pip 23/26, including empty environment fallbacks. Unsafe-CA tests reject affected, malformed, missing and directory-valued overrides before invoking pip, including shadowed files. Postchecks mutate a clean override at the install boundary. Outer-boundary tests enforce the exact whitelist on all 15 invocations. |
+| Compromised roots | Real affected pip and standalone certifi wheel bundles fail the production checks; fixed bundles pass. Standalone certifi fixtures use standalone wheels, not vendored modules with pip-bound resource lookups. |
+| Download failure | `test_download_transport_failure` reaches a real refused local connection; stale-index and constraint tests fail real dependency resolution. Image tests inject helper-fetch, temporary-file, signed-index, package, bundle, root-check and helper failures on checkout/standalone paths, checking cleanup and download ordering. |
+| Unchanged API commit | `test_update_paths` still requires pip repair and app verification, skips requirements only on an unchanged commit, and checks the three-service start order. |
+| Dependency failure | `test_api_install_dependency_and_trust_gates` executes install gates for pip, Cython, rich-toolkit, requirements and app checks. `test_outer_update_constraints_stop_restart` uses real pip conflicts through the production update block. |
+| JoinMarket release binding | Existing release-gate tests use real Git tags and copied files across eight legacy/tampered/missing/reviewed fixtures. `test_joinmarket_existing_and_new_posthook` checks existing and new install branches, owner failure and posthook failure. |
+| Service fail-closed behavior | Update tests refuse restart after missing remote branches, pip/app/dependency failure, fetch/reset failure or failed commit readback. Failed stops abort before mutation; failed starts report failure. New regression cases exposed missing status checks and a nonfatal Cython error, which now abort. |
+| System/provisioning | `python-trust-system.py` runs the unchanged helper twice against Debian's real system Python and pip, verifies three generated entrypoints, and hashes distribution pip files plus the PEP 668 marker before/after. The actual data-upgrade hook propagates failures and retains its log redirection. |
+
+These are executable branch contracts, not a claim of 100% changed-line or
+whole-installer branch coverage. Install/update tests execute source blocks with
+inert external-command fixtures. They do not execute full image builds, signature
+verification, JoinMarket native compilation, or live systemd repair. Successful
+source tests do not establish deployment acceptance. `SSL_CERT_DIR`, native
+stores, and per-request overrides remain outside the helper's file checks.
+The signed JoininBox release and companion OS trust refresh remain deployment
+prerequisites; CI does not bypass either gate. Repository administrators must
+select this workflow as a required check if they want merge protection.
+
 ## Reproduce
 
 Download the public chain archive linked from

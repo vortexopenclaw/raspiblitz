@@ -335,6 +335,7 @@ if [ "$1" = "1" ] || [ "$1" = "on" ]; then
   "${pip_sudo[@]}" /home/admin/config.scripts/blitz.python-trust.sh pip ./venv/bin/python || exit 1
   if ! "${pip_sudo[@]}" ./venv/bin/pip install --upgrade Cython; then
     echo "error='pip install upgrade Cython'"
+    exit 1
   fi
   echo "# Installing dependencies from requirements.txt ..."
 
@@ -480,18 +481,18 @@ if [ "$1" = "update-code" ]; then
     echo "# Update Web API CODE for API and Celery Services"
 
     echo "# Stopping services..."
-    systemctl stop blitzapi blitzapi-celery-worker blitzapi-celery-beat
+    systemctl stop blitzapi blitzapi-celery-worker blitzapi-celery-beat || exit 1
 
     sudo chown -R blitzapi:blitzapi /home/blitzapi/blitz_api
     cd /home/blitzapi/blitz_api || exit 1
     if [ "$currentBranch" == "" ]; then
-      currentBranch=$(sudo -u blitzapi git rev-parse --abbrev-ref HEAD)
+      currentBranch=$(sudo -u blitzapi git rev-parse --abbrev-ref HEAD) || exit 1
     fi
     echo "# Updating local repo (branch: ${currentBranch})..."
-    oldCommit=$(sudo -u blitzapi git rev-parse HEAD)
-    sudo -u blitzapi git fetch
+    oldCommit=$(sudo -u blitzapi git rev-parse HEAD) || exit 1
+    sudo -u blitzapi git fetch || exit 1
     if sudo -u blitzapi git show-ref --verify --quiet refs/remotes/origin/${currentBranch}; then
-        sudo -u blitzapi git reset --hard origin/${currentBranch}
+        sudo -u blitzapi git reset --hard origin/${currentBranch} || exit 1
     else
         echo "# ERROR: Branch 'origin/${currentBranch}' not found in remote. Cannot update."
         echo "# Services remain stopped; no unverified fallback restart."
@@ -500,7 +501,7 @@ if [ "$1" = "update-code" ]; then
 
     # Also repair pip when the application commit has not changed.
     "${pip_sudo[@]}" /home/admin/config.scripts/blitz.python-trust.sh pip ./venv/bin/python || exit 1
-    newCommit=$(sudo -u blitzapi git rev-parse HEAD)
+    newCommit=$(sudo -u blitzapi git rev-parse HEAD) || exit 1
     if [ "${oldCommit}" != "${newCommit}" ]; then
       echo "# Code changed, updating dependencies..."
 
@@ -514,7 +515,7 @@ if [ "$1" = "update-code" ]; then
 
     "${pip_sudo[@]}" /home/admin/config.scripts/blitz.python-trust.sh app ./venv/bin/python || exit 1
     echo "# Restarting services..."
-    systemctl start blitzapi blitzapi-celery-worker blitzapi-celery-beat
+    systemctl start blitzapi blitzapi-celery-worker blitzapi-celery-beat || exit 1
 
     echo "# BRANCH ---> ${currentBranch}"
     echo "# old commit -> ${oldCommit}"

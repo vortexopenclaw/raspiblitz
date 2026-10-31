@@ -3,8 +3,8 @@
 
 Run with Python 3.10 or 3.11 (pip 23.0.1 predates Python 3.12):
 python3.11 -m unittest discover -s tests -p 'test_python_trust_bootstrap.py' -v
-No services, SSH, or system package writes. Linux system installation still
-requires operator acceptance on Debian; the target test uses a temporary path.
+No services, SSH, or system package writes in this suite. The separate
+python-trust-system.py test requires the disposable Debian Docker fixture.
 """
 import contextlib
 import http.server
@@ -23,6 +23,12 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / 'home.admin/config.scripts/blitz.python-trust.sh'
+
+
+def clean_environment():
+    return {key: value for key, value in os.environ.items()
+            if not key.startswith('PIP_') and key not in
+            ('REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE', 'SSL_CERT_FILE', 'SSL_CERT_DIR')}
 
 
 def policy_prefix(source):
@@ -55,13 +61,16 @@ class Bootstrap(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
         cls.base = Path(cls.tmp.name)
-        cls.env = {k: v for k, v in os.environ.items() if not k.startswith('PIP_')}
-        cls.env.update(PIP_CONFIG_FILE=os.devnull, PIP_DISABLE_PIP_VERSION_CHECK='1')
+        cls.env = clean_environment()
+        cls.env.update(PIP_CONFIG_FILE=os.devnull, PIP_DISABLE_PIP_VERSION_CHECK='1', PIP_NO_CACHE_DIR='1')
         cls.wheels = cls.base / 'wheels'
         cls.wheels.mkdir()
         for version in ('23.0.1', '26.0.1', '26.2.2'):
             cls.run_cmd([sys.executable, '-m', 'pip', 'download', '--no-deps',
                          '--dest', str(cls.wheels), 'pip==' + version])
+        for version in ('2025.4.26', '2026.10.19'):
+            cls.run_cmd([sys.executable, '-m', 'pip', 'download', '--no-deps',
+                         '--dest', str(cls.wheels), 'certifi==' + version])
         cls.ca = cls.base / 'clean.pem'
         cls.bad_ca = cls.base / 'affected.pem'
         for version, dest in (('26.2.2', cls.ca), ('26.0.1', cls.bad_ca)):
@@ -90,6 +99,55 @@ class Bootstrap(unittest.TestCase):
     def helper(self, python, ca=None, env=None, mode='pip'):
         return self.run_cmd(['bash', str(HELPER), mode, str(python), str(ca or self.ca)],
                             env=env, ok=False)
+
+    def test_missing_pip_fails_before_download(self):
+        path = self.base / 'without-pip'
+        self.run_cmd([sys.executable, '-m', 'venv', '--without-pip', str(path)])
+        result = self.helper(path / 'bin/python')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("No module named 'pip'", result.stderr)
+        self.assertNotIn('Collecting', result.stdout)
+
+    def test_download_transport_failure(self):
+        python = self.venv('23.0.1')
+        # A bound but non-listening local socket guarantees no external contact.
+        import socket
+        with socket.socket() as sock:
+            sock.bind(('127.0.0.1', 0))
+            env = dict(self.env, PIP_FIND_LINKS=f'https://127.0.0.1:{sock.getsockname()[1]}/pip-26.2.2-py3-none-any.whl',
+                       PIP_RETRIES='0', PIP_TIMEOUT='1', NO_PROXY='127.0.0.1')
+            result = self.helper(python, env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Connection refused', result.stdout + result.stderr)
+        self.assertIn('23.0.1', self.run_cmd([str(python), '-m', 'pip', '--version']).stdout)
+
+    def test_insecure_download_policy_refused(self):
+        python = self.venv('26.0.1')
+        for policy, message in (({'PIP_TRUSTED_HOST': 'localhost'}, 'trusted-host'),
+                                ({'PIP_FIND_LINKS': 'http://127.0.0.1:1/pip.whl'}, 'requires HTTPS'),
+                                ({'PIP_NO_INDEX': '0', 'PIP_INDEX_URL': 'http://127.0.0.1:1/simple'}, 'requires HTTPS'),
+                                ({'PIP_NO_INDEX': '0', 'PIP_EXTRA_INDEX_URL': 'http://127.0.0.1:1/simple'}, 'requires HTTPS')):
+            with self.subTest(policy=policy):
+                result = self.helper(python, env=dict(self.env, **policy))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+                self.assertNotIn('Collecting', result.stdout)
+
+    def test_app_missing_and_affected_certifi(self):
+        python = self.venv('26.2.2')
+        result = self.helper(python, mode='app')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("No module named 'certifi'", result.stderr)
+        site = Path(self.run_cmd([str(python), '-c', 'import sysconfig; print(sysconfig.get_path("purelib"))']).stdout.strip())
+        with zipfile.ZipFile(self.wheels / 'certifi-2025.4.26-py3-none-any.whl') as wheel:
+            for name in wheel.namelist():
+                if name.startswith('certifi/') and not name.endswith('/'):
+                    dest = site / name
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(wheel.read(name))
+        result = self.helper(python, mode='app')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Affected emSign anchor', result.stderr)
 
     def test_actual_pip23_fresh_venv(self):
         python = self.venv('23.0.1')
@@ -228,10 +286,13 @@ class Bootstrap(unittest.TestCase):
                         if selected in ('REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE', 'PIP_CERT'):
                             policy[selected] = str(cert)
                             policy['SSL_CERT_FILE'] = str(self.ca)
+                            if selected == 'CURL_CA_BUNDLE':
+                                policy['REQUESTS_CA_BUNDLE'] = ''
                         elif selected in ('SSL_CERT_FILE', 'argument'):
                             config.write_text('[global]\n')
                             if selected == 'SSL_CERT_FILE':
                                 policy[selected] = str(cert)
+                                policy.update(REQUESTS_CA_BUNDLE='', CURL_CA_BUNDLE='', PIP_CERT='')
                         if selected == 'REQUESTS_CA_BUNDLE':
                             policy['CURL_CA_BUNDLE'] = str(self.ca)
                         before = len(requests)
@@ -252,7 +313,7 @@ class Bootstrap(unittest.TestCase):
         wrapper.chmod(0o755)
         with self.https_wheel() as (cert, env, requests):
             for source in ('REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE', 'PIP_CERT', 'config', 'SSL_CERT_FILE'):
-                for bad in (self.bad_ca, malformed, self.base / 'missing-ca.pem'):
+                for bad in (self.bad_ca, malformed, self.base / 'missing-ca.pem', self.base):
                     with self.subTest(source=source, bad=bad):
                         policy = dict(env, REQUESTS_CA_BUNDLE=str(cert))
                         if source == 'config':
@@ -270,12 +331,13 @@ class Bootstrap(unittest.TestCase):
 
     def test_explicit_ca_postconditions(self):
         python = self.venv('26.2.2')
-        # Install the real fixed standalone certifi files shipped in the wheel.
+        # Use the standalone wheel: vendored certifi.core refers back to pip's
+        # package resources even when copied to a top-level certifi directory.
         site = Path(self.run_cmd([str(python), '-c', 'import sysconfig; print(sysconfig.get_path("purelib"))']).stdout.strip())
-        with zipfile.ZipFile(self.wheels / 'pip-26.2.2-py3-none-any.whl') as wheel:
+        with zipfile.ZipFile(self.wheels / 'certifi-2026.10.19-py3-none-any.whl') as wheel:
             for name in wheel.namelist():
-                if name.startswith('pip/_vendor/certifi/') and not name.endswith('/'):
-                    dest = site / name.removeprefix('pip/_vendor/')
+                if name.startswith('certifi/') and not name.endswith('/'):
+                    dest = site / name
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     dest.write_bytes(wheel.read(name))
         clean_app = self.helper(python, mode='app')
@@ -376,7 +438,7 @@ sudo() {
             (path / 'requirements.txt').write_text('pip==26.0.1\n')
             result = subprocess.run(['bash', '-c', header + policy_prefix(source) + '\n' + block,
                                      'test', 'update-code', 'main'],
-                                    env=dict(os.environ, **policy, UNRELATED_SECRET='do-not-forward'),
+                                    env=dict(clean_environment(), **policy, UNRELATED_SECRET='do-not-forward'),
                                     text=True, capture_output=True)
             self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn('ResolutionImpossible', result.stdout + result.stderr)
@@ -515,7 +577,7 @@ class RestartPaths(unittest.TestCase):
                     command = line[line.index('"${pip_sudo[@]}"'):].split('; then', 1)[0].split(' ||', 1)[0].split(' >', 1)[0].rstrip('\\; ')
                     header = 'sudo() { ' + runner + ' "$@"; }\n'
                     result = subprocess.run(['bash', '-c', header + policy_prefix(source) + '\n' + command],
-                                            env=dict(os.environ, **policy, PYTHONPATH='not-forwarded',
+                                            env=dict(clean_environment(), **policy, PYTHONPATH='not-forwarded',
                                                      PYTHONHOME='not-forwarded', UNRELATED_SECRET='not-forwarded'),
                                             capture_output=True, text=True)
                     self.assertEqual(result.returncode, 0, file + ': ' + result.stdout + result.stderr)
@@ -532,11 +594,20 @@ class RestartPaths(unittest.TestCase):
             block = block.replace('ls /etc/systemd/system/blitzapi.service', 'printf blitzapi.service')
             header = '''
 currentBranch=main
-systemctl() { printf 'service %s\\n' "$*"; }
+systemctl() {
+  printf 'service %s\\n' "$*"
+  [ "$1" != "$FAIL_COMMAND" ]
+}
 sudo() {
   shift 2
   while [[ "$1" = --preserve-env=* ]]; do shift; done
   if [ "$1" = git ]; then
+    echo "git $2" >&2
+    [ "$2" != "$FAIL_COMMAND" ] || return 1
+    if [ "$FAIL_COMMAND" = rev-parse-new ] && [ "$2" = rev-parse ] && [ -f "$MARKER" ]; then
+      echo git rev-parse-new >&2
+      return 1
+    fi
     case "$2" in
       show-ref) return "$BRANCH_STATUS" ;;
       rev-parse)
@@ -548,26 +619,64 @@ sudo() {
     echo "check $2"
     if [ "$2" = "$FAIL_CHECK" ]; then return 1; fi
   elif [[ "$1" = *venv/bin/pip ]]; then
+    echo dependencies
     return "$INSTALL_STATUS"
   fi
+  return 0
 }
 '''
-            for branch, failure, change, install_status, starts in (
-                    (1, '', 0, 0, False), (0, 'pip', 0, 0, False),
-                    (0, 'app', 0, 0, False), (0, '', 0, 0, True),
-                    (0, '', 1, 1, False), (0, 'app', 1, 0, False),
-                    (0, '', 1, 0, True)):
-                marker = path / 'rev-parse-called'
-                marker.unlink(missing_ok=True)
-                env = dict(os.environ, BRANCH_STATUS=str(branch), FAIL_CHECK=failure,
-                           COMMIT='unchanged', INSTALL_STATUS=str(install_status),
-                           CHANGE=str(change), MARKER=str(marker))
-                result = subprocess.run(['bash', '-c', header + policy_prefix(source) + '\n' + block, 'test', 'update-code', 'main'],
-                                        env=env, capture_output=True, text=True)
-                self.assertEqual('service start ' in result.stdout, starts, result.stdout + result.stderr)
-                if starts:
-                    self.assertLess(result.stdout.index('check pip'), result.stdout.index('check app'))
-                    self.assertLess(result.stdout.index('check app'), result.stdout.index('service start'))
+            cases = [(branch, failure, change, install, starts, '')
+                     for branch, failure, change, install, starts in (
+                         (1, '', 0, 0, False), (0, 'pip', 0, 0, False),
+                         (0, 'app', 0, 0, False), (0, '', 0, 0, True),
+                         (0, '', 1, 1, False), (0, 'app', 1, 0, False),
+                         (0, '', 1, 0, True))]
+            cases += [(0, '', 0, 0, command == 'start', command)
+                      for command in ('stop', 'fetch', 'reset', 'rev-parse', 'start')]
+            cases.append((0, '', 1, 0, False, 'rev-parse-new'))
+            for branch, failure, change, install_status, starts, command in cases:
+                with self.subTest(branch=branch, failure=failure, change=change, command=command):
+                    marker = path / 'rev-parse-called'
+                    marker.unlink(missing_ok=True)
+                    env = dict(os.environ, BRANCH_STATUS=str(branch), FAIL_CHECK=failure,
+                               COMMIT='unchanged', INSTALL_STATUS=str(install_status),
+                               CHANGE=str(change), MARKER=str(marker), FAIL_COMMAND=command)
+                    result = subprocess.run(['bash', '-c', header + policy_prefix(source) + '\n' + block, 'test', 'update-code', 'main'],
+                                            env=env, capture_output=True, text=True)
+                    self.assertEqual('service start ' in result.stdout, starts, result.stdout + result.stderr)
+                    self.assertEqual(result.returncode == 0, starts and not command, result.stdout + result.stderr)
+                    self.assertIn('service stop blitzapi blitzapi-celery-worker blitzapi-celery-beat', result.stdout)
+                    if command:
+                        self.assertIn('service ' + command if command in ('stop', 'start') else 'git ' + command,
+                                      result.stdout + result.stderr)
+                    if command == 'stop':
+                        self.assertNotIn('git ', result.stderr)
+                        self.assertNotIn('check ', result.stdout)
+                    if starts:
+                        self.assertLess(result.stdout.index('check pip'), result.stdout.index('check app'))
+                        self.assertLess(result.stdout.index('check app'), result.stdout.index('service start'))
+                        self.assertEqual('dependencies' in result.stdout, bool(change))
+            # Cover absent service and branch inference without fabricating an
+            # active installation or silently defaulting to an arbitrary branch.
+            env = dict(os.environ, BRANCH_STATUS='0', FAIL_CHECK='', COMMIT='unchanged',
+                       INSTALL_STATUS='0', CHANGE='0', MARKER=str(path / 'inferred'), FAIL_COMMAND='')
+            for command in ('', 'rev-parse'):
+                env['FAIL_COMMAND'] = command
+                result = subprocess.run(['bash', '-c', header.replace('currentBranch=main', 'currentBranch=') +
+                                         policy_prefix(source) + '\n' + block, 'test', 'update-code', ''],
+                                        env=env, text=True, capture_output=True)
+                self.assertEqual(result.returncode, int(bool(command)), result.stdout + result.stderr)
+                if not command:
+                    self.assertIn('# BRANCH ---> unchanged', result.stdout)
+                else:
+                    self.assertNotIn('git fetch', result.stderr)
+            result = subprocess.run(['bash', '-c', header + policy_prefix(source) + '\n' +
+                                     block.replace('printf blitzapi.service', 'true'), 'test', 'update-code', 'main'],
+                                    env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('blitzapi not active', result.stdout)
+            self.assertNotIn('service stop', result.stdout)
+            self.assertNotIn('check ', result.stdout)
 
     def test_image_checkout_and_standalone_fail_closed(self):
         source = (ROOT / 'build_sdcard.sh').read_text()
@@ -599,6 +708,10 @@ wget() {
   echo helper-fetched; return "$FETCH_STATUS"
 }
 python3() { cat >/dev/null; echo bundle-verified; return "$CA_STATUS"; }
+mktemp() {
+  [ "$TEMP_STATUS" = 0 ] || return 1
+  command mktemp "$@"
+}
 '''
             script.write_text(header + block + '\necho next-download\n')
             for checkout in (True, False):
@@ -608,16 +721,17 @@ python3() { cat >/dev/null; echo bundle-verified; return "$CA_STATUS"; }
                     helper.unlink(missing_ok=True)
                 failures = ('', 'INDEX', 'APT', 'REFRESH', 'CA', 'HELPER')
                 if not checkout:
-                    failures += ('FETCH',)
+                    failures += ('FETCH', 'TEMP')
                 for failure in failures:
                     with self.subTest(checkout=checkout, failure=failure):
                         statuses = {name + '_STATUS': str(int(name == failure))
-                                    for name in ('INDEX', 'APT', 'REFRESH', 'CA', 'HELPER', 'FETCH')}
+                                    for name in ('INDEX', 'APT', 'REFRESH', 'CA', 'HELPER', 'FETCH', 'TEMP')}
                         result = subprocess.run(['bash', str(script)], text=True, capture_output=True,
                                                 env=dict(os.environ, **statuses, TMPDIR=temp))
                         self.assertEqual(result.returncode == 0, not failure, result.stdout + result.stderr)
                         self.assertEqual('next-download' in result.stdout, not failure, result.stdout + result.stderr)
-                        if failure in ('INDEX', 'APT', 'REFRESH', 'CA', 'FETCH'):
+                        self.assertEqual(list(root.glob('tmp.*')), [], 'standalone helper temporary file leaked')
+                        if failure in ('INDEX', 'APT', 'REFRESH', 'CA', 'FETCH', 'TEMP'):
                             self.assertNotIn('helper-invoked', result.stdout)
                         if failure in ('INDEX', 'APT', 'REFRESH', 'CA'):
                             self.assertNotIn('helper-fetched', result.stdout)
