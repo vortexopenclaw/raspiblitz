@@ -20,13 +20,13 @@ jobs:
           - pr: 5331
             sha: 80b3ba7f01feb1fec4c8aaf08d6eb92f6a17e7de
           - pr: 5329
-            sha: 1f28a4fa2bf38d528f18fd06a987083d37213d99
+            sha: fea0f395d985502fb5ade8f27d23d807c7f2edcb
           - pr: 5328
             sha: d1e368b9bc5e1a94fe1bc7a663ae50beff6c73f3
           - pr: 5327
             sha: a208f997e88879e1b6835f76166b683a4ffefe33
           - pr: 5326
-            sha: f8a87e0b707b3cca64e30a9a81b134ef846927a5
+            sha: 76ad9b26b43a4b0d4d64959822274359ad51ab85
           - pr: 5300
             sha: fa07eec21b004cf74ba3bdded4075da025928511
           - pr: 5283
@@ -34,7 +34,7 @@ jobs:
     steps:
       - name: Check out exact PR head
         id: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: vortexopenclaw/raspiblitz
           ref: ${{ matrix.sha }}
