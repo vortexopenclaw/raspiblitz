@@ -51,8 +51,8 @@ function installDependencies() {
 
   # rust deps for cln-grpc and clnrest plugins
   echo "# Install Rust to /opt/rust/"
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-    sudo RUSTUP_HOME=/opt/rust CARGO_HOME=/opt/rust sh -s -- --no-modify-path -y
+  (set -o pipefail; curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sudo RUSTUP_HOME=/opt/rust CARGO_HOME=/opt/rust sh -s -- --no-modify-path -y) || exit 1
   echo "# Set /opt/rust write access for rust group"
   if ! getent group rust >/dev/null 2>&1; then
     sudo groupadd rust
@@ -93,7 +93,7 @@ function installDependencies() {
 
   # Sync Python dependencies with uv
   cd /home/bitcoin/lightning || exit 1
-  sudo -u bitcoin RUSTUP_HOME=/opt/rust CARGO_HOME=/opt/rust uv sync --all-extras --all-groups --frozen
+  sudo -u bitcoin RUSTUP_HOME=/opt/rust CARGO_HOME=/opt/rust uv sync --all-extras --all-groups --frozen || exit 1
 
   sudo apt-get install -y protobuf-compiler
 

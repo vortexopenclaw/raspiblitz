@@ -40,7 +40,8 @@ function install() {
   # uv should be installed from main CLN install.
   if ! command -v uv &>/dev/null; then
     echo "# Installing uv for backup plugin"
-    curl -LsSf https://releases.astral.sh/github/uv/releases/download/0.13.6/uv-installer.sh | sudo UV_INSTALL_DIR=/usr/local/bin sh
+    # This HTTPS installer is version-pinned, not checksum/attestation verified.
+    (set -o pipefail; curl -LsSf https://releases.astral.sh/github/uv/releases/download/0.13.6/uv-installer.sh | sudo UV_INSTALL_DIR=/usr/local/bin sh) || exit 1
     export PATH="/usr/local/bin:$PATH"
   fi
 
@@ -55,7 +56,7 @@ function install() {
   if [ $($lightningcli_alias plugin list 2>/dev/null | grep -c "/${plugin}") -eq 0 ]; then
     echo "# Checking dependencies"
     cd ${plugindir}/backup/ || exit 1
-    sudo -u bitcoin uv sync --all-extras
+    sudo -u bitcoin uv sync --all-extras || exit 1
 
     sudo chmod +x ${plugindir}/${plugin}/${plugin}.py
 
