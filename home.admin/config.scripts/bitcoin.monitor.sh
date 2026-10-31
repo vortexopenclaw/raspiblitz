@@ -39,11 +39,12 @@ fi
 bitcoin_monitor_rpc_timeout="${BITCOIN_MONITOR_RPC_TIMEOUT:-8}"
 
 bitcoin_cli() {
-  timeout "${bitcoin_monitor_rpc_timeout}" ${bitcoincli_alias} "$@"
+  # Escalate if the RPC process ignores TERM; retain the process-group cleanup.
+  timeout --kill-after=1 "${bitcoin_monitor_rpc_timeout}" ${bitcoincli_alias} "$@"
 }
 
 get_rpc_error_short() {
-  if [ "$1" == "124" ]; then
+  if [ "$1" == "124" ] || [ "$1" == "137" ]; then
     echo "RPC timeout"
   else
     echo "RPC failed"
@@ -51,7 +52,7 @@ get_rpc_error_short() {
 }
 
 get_rpc_error_full() {
-  if [ "$1" == "124" ]; then
+  if [ "$1" == "124" ] || [ "$1" == "137" ]; then
     echo "bitcoin-cli RPC call timed out after ${bitcoin_monitor_rpc_timeout} seconds"
   else
     echo "bitcoin-cli RPC call failed with exit code $1"
@@ -59,7 +60,10 @@ get_rpc_error_full() {
 }
 
 get_connection_count() {
-  bitcoin_cli getconnectioncount 2>/dev/null | tr -cd '[[:digit:]]'
+  local count
+  count=$(bitcoin_cli getconnectioncount 2>/dev/null) || return 1
+  [[ "${count}" =~ ^[0-9]+$ ]] || return 1
+  echo "${count}"
 }
 
 get_established_peer_count() {
@@ -71,7 +75,10 @@ get_established_peer_count() {
 }
 
 get_json_connection_count() {
-  echo "${1}" | jq -r '.connections // empty' 2>/dev/null | tr -cd '[[:digit:]]'
+  echo "${1}" | jq -ers '
+    select(length == 1) | .[0].connections |
+    select(type == "number") | select(. >= 0 and . == floor)
+  ' 2>/dev/null
 }
 
 ######################################################
@@ -107,7 +114,10 @@ if [ "$2" = "status" ]; then
     # check for errors
     if [ "${failData}" != "" ] || [ "${bitcoincli_exitcode}" != "0" ]; then
       btc_ready="0"
-      if [ "${failData}" != "" ]; then
+      if [ "${bitcoincli_exitcode}" == "124" ] || [ "${bitcoincli_exitcode}" == "137" ]; then
+        btc_error_short=$(get_rpc_error_short "${bitcoincli_exitcode}")
+        btc_error_full=$(get_rpc_error_full "${bitcoincli_exitcode}")
+      elif [ "${failData}" != "" ]; then
         btc_error_short=$(echo ${failData/error*:/} | sed 's/[^a-zA-Z0-9 ]//g')
         btc_error_full=$(echo ${failData} | tr -d "'" | tr -d '"')
       else
@@ -116,10 +126,13 @@ if [ "$2" = "status" ]; then
       fi
       btc_ready="0"
 
+    elif ! connections=$(get_json_connection_count "${winData}"); then
+      btc_error_short="Invalid RPC response"
+      btc_error_full="bitcoin-cli getnetworkinfo returned invalid or empty data"
+
     # check results if proof for online
     else
       btc_ready="1"
-      connections=$(get_json_connection_count "${winData}")
       if [ "${connections}" != "" ] && [ "${connections}" != "0" ]; then
         btc_online="1"
       fi
@@ -146,15 +159,18 @@ if [ "$2" = "network" ]; then
 
   # get data
   btc_running=$(systemctl status $service_alias 2>/dev/null | grep -c "active (running)")
-  getnetworkinfo=$(bitcoin_cli getnetworkinfo 2>/dev/null)
+  getnetworkinfo=$(bitcoin_cli getnetworkinfo 2>/dev/null) || getnetworkinfo=""
   btc_peers=$(get_json_connection_count "${getnetworkinfo}")
+  if [ "${btc_peers}" == "" ]; then
+    getnetworkinfo=""
+  fi
   btc_address=""
   btc_port=""
   btc_peers_onion="0"
   btc_peers_i2p="0"
 
   if [ "${getnetworkinfo}" != "" ]; then
-    getpeerinfo=$(bitcoin_cli getpeerinfo 2>/dev/null)
+    getpeerinfo=$(bitcoin_cli getpeerinfo 2>/dev/null) || getpeerinfo=""
     btc_address=$(echo ${getnetworkinfo} | jq -r '.localaddresses [0] .address')
     btc_port=$(echo "${getnetworkinfo}" | jq -r '.localaddresses [0] .port')
     if [ "${getpeerinfo}" != "" ]; then
@@ -194,8 +210,11 @@ fi
 if [ "$2" = "info" ]; then
 
   # get data
-  blockchaininfo=$(bitcoin_cli getblockchaininfo 2>/dev/null)
-  if [ "${blockchaininfo}" == "" ]; then
+  blockchaininfo=$(bitcoin_cli getblockchaininfo 2>/dev/null) || blockchaininfo=""
+  if ! echo "${blockchaininfo}" | jq -es 'length == 1 and (.[0] |
+    type == "object" and (.headers | type == "number") and
+    (.blocks | type == "number") and (.initialblockdownload | type == "boolean") and
+    (.verificationprogress | type == "number"))' >/dev/null 2>&1; then
     echo "error='no data'"
     exit 1
   fi
@@ -260,8 +279,9 @@ fi
 if [ "$2" = "mempool" ]; then
 
   # get data
-  mempoolinfo=$(bitcoin_cli getmempoolinfo 2>/dev/null)
-  if [ "${mempoolinfo}" == "" ]; then
+  mempoolinfo=$(bitcoin_cli getmempoolinfo 2>/dev/null) || mempoolinfo=""
+  if ! echo "${mempoolinfo}" | jq -es 'length == 1 and (.[0] |
+    type == "object" and (.size | type == "number"))' >/dev/null 2>&1; then
     echo "error='no data'"
     exit 1
   fi
