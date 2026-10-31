@@ -1,11 +1,25 @@
 # Public-download TLS regression checks
 
-Run `python3 test/public-download-tls.py` with Python 3, Bash, wget, and OpenSSL installed. The tests never run installers, sudo, service operations, or package upgrades. Temporary fixtures honor `TMPDIR`.
+Run `bash test/public-download-tls.sh` with Python 3, Bash, **GNU wget**, OpenSSL and ShellCheck installed. This is also the entry point for `.github/workflows/public-download-tls.yml`, which runs on pull requests, pushes to the existing `fix/public-download-ssl-verification` source branch, and manual dispatch. The runner checks Bash syntax for all six affected production scripts and itself, runs the repository's existing ShellCheck error-level gate (plus all levels for the new runner), and checks Python syntax before executing the TLS tests. No checks are disabled.
 
-The tests extract the actual key-download commands from the LND, Pool, and chantools installers, and the authorized-key download from the amd64 packer initializer. Each executes real wget against an ephemeral local HTTPS server with an untrusted self-signed certificate. The negative case must report a certificate error and exit before a continuation marker. An explicit test-only CA enables the positive control. This does not modify system trust.
+The tests never run installers, real sudo, GPG imports, service operations, or package upgrades. Temporary fixtures honor `TMPDIR`. All transfers use real GNU wget against ephemeral loopback servers, with bounded timeouts/retries and no proxy or wget configuration. A test-only CA enables positive controls without changing system trust.
 
-The Sphinx readiness block is extracted and exercised with a real local TLS endpoint for both direct and stubbed torsocks routing. Public-CA, Tor, and local-network modes must reject an untrusted HTTPS certificate; only the two explicit self-signed modes accept it. All modes must accept the test-only CA. The torsocks stub does not test Tor transport. Plain HTTP and onion transport are unchanged.
+## Coverage
 
-Verification on 2026-10-29 used macOS and Homebrew wget 1.25.0. All three test methods passed. Normal, CA-verified wget GET requests returned HTTP 200 for both Keybase signer-key endpoints, the LND roasbeef and ziggie1984 keys on raw.githubusercontent.com, and the packer Vagrant key URL after its HTTPS redirect. These are point-in-time host TLS checks, not artifact authenticity, Debian hardware, or full application-installation tests.
+- The actual signer-key download commands from LND install/update, Pool and chantools, plus the authorized-key download from the amd64 packer initializer, run with both absent and pre-existing output files. Each combination tests untrusted certificates, hostname mismatch, HTTP 500, truncated responses, and trusted success. Failed downloads must exit before a recording GPG/continuation sentinel; success must replace stale bytes with the exact fixture body. No `set -e` is added to these snippets: their production failure guards must work themselves.
+- The actual Sphinx readiness block runs in all six connection modes and an unknown-mode fail-closed control, through both direct and recording torsocks-stub routes. Every combination tests untrusted certificates, hostname mismatch, trusted success, unexpected response content, HTTP 500, truncated `INDEX`, and plain HTTP. Only the two explicit self-signed modes may bypass certificate verification. Pre-seeded response/TLS variables test that stale state is reset. Both route selection and the reported readiness result are asserted.
+- These are 148 transfer/readiness scenarios in three unittest methods. Every changed download failure guard and both Sphinx TLS/routing branches take success and failure paths. This is bounded command/block coverage, not whole-installer coverage or an instrumented line-coverage percentage.
 
-The patch preserves existing signature and checksum logic; it does not certify those implementations. It makes a failed key download fatal rather than continuing with cached state. This complements current CA packages after the eMudhra SSL certificate compromise but cannot replace vendor trust updates or guarantee universal incident coverage. Existing local peer readiness calls and application-specific certificate paths are intentionally not globally rewritten.
+The truncated-response case found a real readiness defect: GNU wget can emit `INDEX` before reporting an incomplete transfer. Sphinx now clears the response on download failure instead of reporting readiness from those partial bytes.
+
+## Isolation and limits
+
+For an image containing the tools above, the same runner can execute with a read-only source mount, dropped capabilities and external networking disabled (loopback remains available):
+
+```sh
+docker run --rm --network none --read-only --cap-drop ALL \
+  --tmpfs /tmp:rw,nosuid,noexec -v "$PWD:/src:ro" -w /src \
+  YOUR_TEST_IMAGE bash test/public-download-tls.sh
+```
+
+The torsocks stub tests routing choice, not Tor transport. Plain HTTP/onion transport is not made confidential by these changes. No full LND/Pool/chantools installation, release artifact signature validation, appliance/hardware operation, or current public-host TLS check is performed. The fixture signer key is synthetic data, not valid OpenPGP material. Existing signature/checksum policy is otherwise unchanged; these tests demonstrate that failed key retrieval cannot continue into its consumer, not that the entire existing authenticity implementation is sound. CA/vendor trust updates remain necessary.

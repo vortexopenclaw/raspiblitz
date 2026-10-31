@@ -341,9 +341,9 @@ if [ "$1" = "status" ]; then
     connectionTLS=(--no-check-certificate)
   fi
   if [ "${sphinxrelay_connection}" == "tor" ]; then
-    connectionResponse=$(torsocks wget "${connectionTLS[@]}" -qO- "${publicURL}/app" 2>/dev/null)
+    connectionResponse=$(torsocks wget "${connectionTLS[@]}" -qO- "${publicURL}/app" 2>/dev/null) || connectionResponse=""
   else
-    connectionResponse=$(wget "${connectionTLS[@]}" -qO- "${publicURL}/app" 2>/dev/null)
+    connectionResponse=$(wget "${connectionTLS[@]}" -qO- "${publicURL}/app" 2>/dev/null) || connectionResponse=""
   fi
   if [ "${connectionResponse}" == "INDEX" ]; then
     connectionTest="OK"
