@@ -244,9 +244,73 @@ class MonitorTests(unittest.TestCase):
                 self.assertEqual(values['btc_peers'], '2')
 
     def test_info_success(self):
-        result, values, _ = self.run_monitor('info')
-        self.assertEqual(result.returncode, 0)
-        self.assertEqual(values['btc_synced'], '1')
+        for progress in (0, 0.5, 1e-8, 1):
+            with self.subTest(progress=progress):
+                self.modes(getblockchaininfo={'out': json.dumps(
+                    {**CHAIN, 'verificationprogress': progress})})
+                result, values, _ = self.run_monitor('info')
+                self.assertEqual(result.returncode, 0, result)
+                self.assertEqual(result.stderr, '')
+                self.assertEqual(values['btc_synced'], '1')
+
+    def test_info_invalid_numeric_fields(self):
+        for field in ('headers', 'blocks', 'verificationprogress'):
+            invalid = ('-1', '1.5', '2147483648', '9007199254740992',
+                       '1e100', '1e999', '-1e999', 'NaN', 'null', '"1"')
+            if field == 'verificationprogress':
+                invalid += ('1.000001', '-0.000001')
+            for value in invalid:
+                with self.subTest(field=field, value=value):
+                    chain = {**CHAIN, field: 'INVALID_NUMBER'}
+                    output = json.dumps(chain).replace('"INVALID_NUMBER"', value)
+                    self.modes(getblockchaininfo={'out': output})
+                    result, values, _ = self.run_monitor('info')
+                    self.assertEqual(result.returncode, 1, result)
+                    self.assertEqual(values, {'error': 'no data'})
+                    self.assertEqual(result.stderr, '')
+
+    def test_info_integer_boundaries_and_exponents(self):
+        for literal, expected in (('0', '0'), ('2147483647', '2147483647'),
+                                  ('1e6', '1000000'), ('1.0', '1')):
+            with self.subTest(literal=literal):
+                output = ('{"headers":' + literal + ',"blocks":' + literal +
+                          ',"initialblockdownload":false,"verificationprogress":1}')
+                self.modes(getblockchaininfo={'out': output})
+                result, values, _ = self.run_monitor('info')
+                self.assertEqual(result.returncode, 0, result)
+                self.assertEqual(result.stderr, '')
+                self.assertEqual(values['btc_blocks_headers'], expected)
+                self.assertEqual(values['btc_blocks_verified'], expected)
+                self.assertEqual(values['btc_blocks_behind'], '0')
+                self.assertEqual(values['btc_synced'], '1')
+        # Exercise the widest accepted subtraction in both directions.
+        for headers, blocks in ((2147483647, 0), (0, 2147483647)):
+            self.modes(getblockchaininfo={'out': json.dumps(
+                {**CHAIN, 'headers': headers, 'blocks': blocks})})
+            result, values, _ = self.run_monitor('info')
+            self.assertEqual(result.returncode, 0, result)
+            self.assertEqual(result.stderr, '')
+            self.assertEqual(values['btc_blocks_behind'], str(headers - blocks))
+
+    def test_mempool_invalid_sizes(self):
+        for value in ('-1', '1.5', '2147483648', '9007199254740992',
+                      '1e100', '1e999', '-1e999', 'NaN', 'null', '"1"'):
+            with self.subTest(value=value):
+                self.modes(getmempoolinfo={'out': '{"size":' + value + '}'})
+                result, values, _ = self.run_monitor('mempool')
+                self.assertEqual(result.returncode, 1, result)
+                self.assertEqual(values, {'error': 'no data'})
+                self.assertEqual(result.stderr, '')
+
+    def test_mempool_integer_boundaries_and_exponents(self):
+        for literal, expected in (('0', '0'), ('2147483647', '2147483647'),
+                                  ('1e6', '1000000'), ('1.0', '1')):
+            with self.subTest(literal=literal):
+                self.modes(getmempoolinfo={'out': '{"size":' + literal + '}'})
+                result, values, _ = self.run_monitor('mempool')
+                self.assertEqual(result.returncode, 0, result)
+                self.assertEqual(result.stderr, '')
+                self.assertEqual(values['btc_mempool_transactions'], expected)
 
     def test_mempool_success(self):
         result, values, _ = self.run_monitor('mempool')

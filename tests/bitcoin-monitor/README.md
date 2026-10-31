@@ -12,7 +12,9 @@ not extracted functions. A mock `bitcoin-cli` is a real process connected to a
 local TCP RPC fixture. Tests cover status success (all three networks), zero
 peers, actual connection refusal, deadlines, stderr before timeout, invalid and
 empty responses, network/connection-count/socket fallbacks, info and mempool
-success/failure, stale sourced status, repeated iterations, and a TERM-resistant
+success/failure (including nonfinite, negative, fractional, and oversized counts,
+progress outside [0,1], decimal/exponent normalization, and count boundaries),
+stale sourced status, repeated iterations, and a TERM-resistant
 RPC process with a descendant. The 1-second boundary cases respond at 0.8 and
 1.2 seconds, allowing process startup margin. Recorded client/descendant PIDs
 must no longer be live after the monitor returns; temporary output files must

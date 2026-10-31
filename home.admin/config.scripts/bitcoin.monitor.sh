@@ -211,10 +211,16 @@ if [ "$2" = "info" ]; then
 
   # get data
   blockchaininfo=$(bitcoin_cli getblockchaininfo 2>/dev/null) || blockchaininfo=""
-  if ! echo "${blockchaininfo}" | jq -es 'length == 1 and (.[0] |
-    type == "object" and (.headers | type == "number") and
-    (.blocks | type == "number") and (.initialblockdownload | type == "boolean") and
-    (.verificationprogress | type == "number"))' >/dev/null 2>&1; then
+  # Core heights are signed 32-bit integers. This also bounds subtraction safely
+  # and keeps counts exactly representable in jq and Bash (including 32-bit).
+  if ! echo "${blockchaininfo}" | jq -es '
+    def valid_count:
+      type == "number" and isfinite and . >= 0 and . <= 2147483647 and . == floor
+      and (floor | tostring | test("^[0-9]+$"));
+    length == 1 and (.[0] |
+    type == "object" and (.headers | valid_count) and
+    (.blocks | valid_count) and (.initialblockdownload | type == "boolean") and
+    (.verificationprogress | type == "number" and isfinite and . >= 0 and . <= 1))' >/dev/null 2>&1; then
     echo "error='no data'"
     exit 1
   fi
@@ -233,8 +239,10 @@ if [ "$2" = "info" ]; then
   fi
 
   # parse data
-  btc_blocks_headers=$(echo "${blockchaininfo}" | jq -r '.headers')
-  btc_blocks_verified=$(echo "${blockchaininfo}" | jq -r '.blocks')
+  # floor discards an input exponent/decimal spelling; valid_count checked the
+  # resulting serialization is decimal digits only before it reaches Bash.
+  btc_blocks_headers=$(echo "${blockchaininfo}" | jq -r '.headers | floor')
+  btc_blocks_verified=$(echo "${blockchaininfo}" | jq -r '.blocks | floor')
   btc_blocks_behind=$((${btc_blocks_headers} - ${btc_blocks_verified}))
   btc_sync_initialblockdownload=$(echo "${blockchaininfo}" | jq -r '.initialblockdownload' | grep -c 'true')
   btc_sync_progress=$(echo "${blockchaininfo}" | jq -r '.verificationprogress')
@@ -280,14 +288,17 @@ if [ "$2" = "mempool" ]; then
 
   # get data
   mempoolinfo=$(bitcoin_cli getmempoolinfo 2>/dev/null) || mempoolinfo=""
+  # Apply the same conservative, exactly representable count bound as heights.
   if ! echo "${mempoolinfo}" | jq -es 'length == 1 and (.[0] |
-    type == "object" and (.size | type == "number"))' >/dev/null 2>&1; then
+    type == "object" and (.size | type == "number" and isfinite and
+    . >= 0 and . <= 2147483647 and . == floor and
+    (floor | tostring | test("^[0-9]+$"))))' >/dev/null 2>&1; then
     echo "error='no data'"
     exit 1
   fi
 
   # parse data
-  btc_mempool_transactions=$(echo "${mempoolinfo}" | jq -r '.size')
+  btc_mempool_transactions=$(echo "${mempoolinfo}" | jq -r '.size | floor')
 
   # print data
   echo "btc_mempool_transactions=${btc_mempool_transactions}"
