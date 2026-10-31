@@ -18,6 +18,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check shell syntax
-        run: bash -n home.admin/config.scripts/bitcoin.monitor.sh tests/bitcoin-monitor/run.sh
+        run: |
+          bash -n home.admin/config.scripts/bitcoin.monitor.sh
+          bash -n tests/bitcoin-monitor/run.sh
       - name: Exercise production monitor with local RPC processes
         run: tests/bitcoin-monitor/run.sh
