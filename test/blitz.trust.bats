@@ -1,4 +1,7 @@
 #!/usr/bin/env bats
+# Bats deliberately isolates each @test in a subshell; setup exports its fixture
+# state to each test. Cross-test SC2030/SC2031 state-leak warnings are inapplicable.
+# shellcheck disable=SC2030,SC2031
 
 setup() {
   export TRUST_LOG="$BATS_TEST_TMPDIR/commands"
@@ -94,7 +97,8 @@ MOCK
   run bash "$SCRIPT" update
   [ "$status" -ne 0 ]
   [[ "$output" == *'Node.js v22.23.1 needs >= 22.23.4'* ]]
-  ! grep -Eq 'allow-change-held|ignore-hold|unhold' "$TRUST_LOG"
+  run grep -Eq 'allow-change-held|ignore-hold|unhold' "$TRUST_LOG"
+  [ "$status" -eq 1 ]
 }
 
 @test "minimal image and residual Node config do not install Node" {
@@ -103,7 +107,8 @@ MOCK
     export NODE_STATUS
     run env PATH="$MOCK_BIN" /bin/bash "$SCRIPT" update
     [ "$status" -eq 0 ]
-    ! grep -q nodejs "$TRUST_LOG"
+    run grep -q nodejs "$TRUST_LOG"
+    [ "$status" -eq 1 ]
   done
 }
 
@@ -117,7 +122,8 @@ MOCK
     if [ "$FAIL_STEP" = update ]; then
       [ "$(wc -l < "$TRUST_LOG" | tr -d ' ')" -eq 1 ]
     elif [ "$FAIL_STEP" = install ]; then
-      ! grep -q update-ca-certificates "$TRUST_LOG"
+      run grep -q update-ca-certificates "$TRUST_LOG"
+      [ "$status" -eq 1 ]
     fi
   done
 }
@@ -256,6 +262,23 @@ MOCK
   [ "$status" -ne 0 ]
   [[ "$output" == *'Explicit JAVA_HOME needs separate Java trust review'* ]]
   [ ! -e "$TRUST_LOG" ]
+}
+
+@test "installed Node that cannot execute fails both update and check" {
+  printf '#!/bin/bash\nexit 126\n' > "$MOCK_BIN/node"
+  for mode in update check; do
+    run bash "$SCRIPT" "$mode"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *'Installed Node.js cannot run'* ]]
+  done
+}
+
+@test "successful stale Node APT no-op fails the final executable postcondition" {
+  export NODE_VERSION=v22.23.3
+  run bash "$SCRIPT" update
+  [ "$status" -ne 0 ]
+  grep -q 'update-ca-certificates --fresh' "$TRUST_LOG"
+  [[ "$output" == *'Node.js v22.23.3 needs >= 22.23.4'* ]]
 }
 
 @test "fixed existing installer is offline and still enforces CA baseline" {

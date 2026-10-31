@@ -15,6 +15,8 @@ def main():
     p.add_argument("--after", required=True)
     p.add_argument("--chains", required=True, type=Path)
     p.add_argument("--output", required=True, type=Path)
+    p.add_argument("--offline-only", action="store_true",
+                   help="Run all 32 real archived-chain checks, without live HTTPS")
     args = p.parse_args()
     chains = sorted(args.chains.rglob("*.pem"))
     expected = {
@@ -30,13 +32,14 @@ def main():
         store = getattr(args, state)
         for chain in chains:
             tasks.append((state, store, "chain", str(chain), 0 if state == "before" else 2))
-            if "rollover" not in chain.name:
+            if not args.offline_only and "rollover" not in chain.name:
                 # These 14 live names match the publisher inventory and Node probe.
                 # The two offline-only rollover fixtures are deliberately not probed.
                 host = chain.stem
                 tasks.append((state, store, "tls", f"https://{host}/", 0 if state == "before" else 2))
-        for host in ("bitcoincore.org", "api.github.com", "registry.npmjs.org", "pypi.org"):
-            tasks.append((state, store, "tls", f"https://{host}/", 0))
+        if not args.offline_only:
+            for host in ("bitcoincore.org", "api.github.com", "registry.npmjs.org", "pypi.org"):
+                tasks.append((state, store, "tls", f"https://{host}/", 0))
 
     def run(task):
         state, store, mode, target, expected_code = task

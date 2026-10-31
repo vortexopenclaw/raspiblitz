@@ -1,5 +1,9 @@
 # Trust refresh and October 2026 eMudhra audit
 
+Current automated coverage and Docker commands are in [TRUST-CI.md](TRUST-CI.md).
+The verification counts and opt-in instructions below describe the original
+October 29 audit; CI now requires the archived-chain and live TLS controls too.
+
 ## Finding and focused fix
 
 Chrome's CRLSet and root-store changes do not update Debian's trust store.

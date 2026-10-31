@@ -3,40 +3,8 @@ name: Test trust refresh
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - "home.admin/config.scripts/blitz.trust.sh"
-      - "home.admin/config.scripts/blitz.trust.java.py"
-      - "home.admin/config.scripts/bonus.fints.sh"
-      - "test/test_java_trust.py"
-      - "test/test_java_trust_safety.py"
-      - "test/fixtures/java-trust-anchors.pem"
-      - "test/JavaTrustProbe.java"
-      - "test/java_trust_regression.py"
-      - "home.admin/_provision.update.sh"
-      - "home.admin/_provision.setup.sh"
-      - "home.admin/config.scripts/bonus.nodejs.sh"
-      - "home.admin/config.scripts/blitz.release.sh"
-      - "build_sdcard.sh"
-      - "test/blitz.trust.bats"
-      - ".github/workflows/test-trust.yml"
   push:
-    branches: ["dev"]
-    paths:
-      - "home.admin/config.scripts/blitz.trust.sh"
-      - "home.admin/config.scripts/blitz.trust.java.py"
-      - "home.admin/config.scripts/bonus.fints.sh"
-      - "test/test_java_trust.py"
-      - "test/test_java_trust_safety.py"
-      - "test/fixtures/java-trust-anchors.pem"
-      - "test/JavaTrustProbe.java"
-      - "test/java_trust_regression.py"
-      - "home.admin/_provision.update.sh"
-      - "home.admin/_provision.setup.sh"
-      - "home.admin/config.scripts/bonus.nodejs.sh"
-      - "home.admin/config.scripts/blitz.release.sh"
-      - "build_sdcard.sh"
-      - "test/blitz.trust.bats"
-      - ".github/workflows/test-trust.yml"
+    branches: ["dev", "fix/vendor-ca-trust-refresh"]
 
 permissions:
   contents: read
@@ -44,24 +12,16 @@ permissions:
 jobs:
   trust-refresh:
     runs-on: ubuntu-22.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Install test tools
-        run: sudo apt-get update && sudo apt-get install -y bats shellcheck default-jdk-headless
-      - name: Test refresh control flow without changing host trust
-        run: bats test/blitz.trust.bats
-      - name: Test Java transaction and public-inventory guards
-        run: |
-          umask 077
-          fixture=$(mktemp -d "$RUNNER_TEMP/java-trust.XXXXXXXX")
-          javac -d "$fixture" test/JavaTrustProbe.java
-          java -cp "$fixture" JavaTrustProbe build test/fixtures/java-trust-anchors.pem "$fixture/public-only.jks"
-          keytool -J-Duser.language=en -J-Duser.country=US -list -rfc -keystore "$fixture/public-only.jks" -storepass changeit > "$fixture/public-list.txt"
-          JAVA_TRUST_PUBLIC_LISTING="$fixture/public-list.txt" python3 -m unittest discover -s test -p 'test_java_trust*.py' -v
-      - name: Check refresh script
-        run: |
-          shellcheck home.admin/config.scripts/blitz.trust.sh home.admin/config.scripts/bonus.nodejs.sh
-          bash -n home.admin/config.scripts/blitz.trust.sh
-          bash -n home.admin/config.scripts/bonus.nodejs.sh
-          bash -n home.admin/_provision.setup.sh
-          git diff --check
+        with:
+          fetch-depth: 0
+      - name: Build disposable Java, Node, Bats and ShellCheck environment
+        run: docker build -f test/trust.Dockerfile -t raspiblitz-trust-tests .
+      - name: All offline regressions and full changed-path static checks
+        run: docker run --rm --network none raspiblitz-trust-tests
+      - name: Real before/after Java and fixed Node TLS controls
+        # A timeout, changed endpoint, expired chain or missing accepted-before
+        # baseline is a FAILURE, never an expected certificate rejection.
+        run: docker run --rm raspiblitz-trust-tests bash test/run-trust-tests.sh live

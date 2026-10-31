@@ -187,6 +187,26 @@ m.main()
                     self.assertEqual(work.stat().st_mode & 0o777, 0o700)
                     self.assertEqual((work / 'original.jks').stat().st_mode & 0o777, 0o600)
 
+    def test_generated_private_ca_anchor_survives_with_custom_alias(self):
+        self.bad_store()
+        cert = self.store.parent / 'private-ca.pem'
+        key = self.store.parent / 'private-ca.key'
+        subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+                        '-keyout', str(key), '-out', str(cert), '-days', '1',
+                        '-subj', '/CN=Disposable private organization CA',
+                        '-addext', 'basicConstraints=critical,CA:TRUE'],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.add('debian:private-organization-with-no-source-file', cert.read_text())
+        before = self.listing()
+        fix.remediate(self.store, True)
+        after = self.listing()
+        self.assertEqual(after, {a: e for a, e in before.items() if a != 'bad'})
+        self.assertIn('debian:private-organization-with-no-source-file', after)
+        saved = self.store.read_bytes()
+        fix.remediate(self.store, True)
+        self.assertEqual(self.store.read_bytes(), saved)
+        self.assert_clean()
+
     def test_synthetic_private_entry_preserved_byte_for_byte(self):
         self.bad_store()
         os.chmod(self.store, 0o600)
