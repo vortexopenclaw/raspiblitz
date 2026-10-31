@@ -25,10 +25,12 @@ jobs:
       - name: Check changed shell syntax
         shell: bash
         run: |
-          bash -n build_sdcard.sh home.admin/_provision.update.sh \
+          for script in build_sdcard.sh home.admin/_provision.update.sh \
             home.admin/config.scripts/blitz.python-trust.sh \
             home.admin/config.scripts/blitz.web.api.sh \
-            home.admin/config.scripts/bonus.joinmarket.sh
+            home.admin/config.scripts/bonus.joinmarket.sh; do
+            bash -n "$script"
+          done
       - name: Isolated real pip upgrades and shell failure matrix
         shell: bash
         env:
