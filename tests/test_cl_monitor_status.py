@@ -2,7 +2,7 @@
 """Run full cl.monitor.sh status entrypoint in a network-disabled container.
 MIT licensed. Only synthetic RPC output and service fixtures are used.
 """
-import json, pathlib, subprocess, sys
+import json, os, pathlib, subprocess, sys
 source = pathlib.Path(sys.argv[1]).read_text()
 worker = r'''
 import json, os, pathlib, subprocess
@@ -39,6 +39,6 @@ for name, body, err, rc, ready, online in cases:
 print(json.dumps(results,indent=2))
 raise SystemExit(0 if all(x['passed'] for x in results) else 1)
 '''
-cmd=['docker','run','--rm','-i','--network=none','--cap-drop=ALL','--security-opt=no-new-privileges','--read-only','--tmpfs','/src:rw,size=2m','--tmpfs','/usr/local/bin:rw,exec,size=2m','--tmpfs','/var/cache/raspiblitz:rw,size=2m','raspiblitz-monitor-tests:local','python3','-c',worker]
+cmd=['docker','run','--rm','-i','--network=none','--cap-drop=ALL','--security-opt=no-new-privileges','--read-only','--tmpfs','/src:rw,size=2m','--tmpfs','/usr/local/bin:rw,exec,size=2m','--tmpfs','/var/cache/raspiblitz:rw,size=2m',os.environ.get('CL_MONITOR_TEST_IMAGE', 'raspiblitz-cl-monitor-tests'),'python3','-c',worker]
 p=subprocess.run(cmd,input=json.dumps(source)+'\n',text=True,capture_output=True,timeout=60)
 print(p.stdout,end=''); print(p.stderr,file=sys.stderr,end=''); sys.exit(p.returncode)
